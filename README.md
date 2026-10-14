@@ -153,10 +153,16 @@ str(clustering_data)
 ### Visualization 
 
 Built-in visualization functions for UMAPs, marker feature plots,
-cluster-composition dot plots, and related summaries are under active
-development.
+cluster-composition dot plots, and related summaries are available.
 
-In the meantime, clustering results can be extracted directly for custom plot:
+```r
+project$plot_umap()
+project$plot_feature_expression("PD-1")
+project$plot_dotplot(cluster_markers)
+
+```
+
+In addition, clustering results can be extracted directly for custom plot:
 
 ```r
 clustering_data <- project$clustering_results[["run1"]]
