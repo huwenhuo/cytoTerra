@@ -30,6 +30,10 @@ library(cytoTerra)
 
 # `fcs_files` is a character vector of FCS file paths.
 # `df` contains sample-level metadata in the same order as `fcs_files`.
+# my typical file name is 'A1 421_Plate_001.fcs
+# I use A1 as sample_id
+# sample_name is usually a meaning full name such as 'drug A treat rep 1'
+
 project <- cytoTerra(
   fcs_files = fcs_files[1:3],
   sample_ids = df$sample_id[1:3],
@@ -78,7 +82,6 @@ Keep this as a separate section, because import is intended for a **new or diffe
 
 If importing one reference-sample template:
 
-```markdown
 ### Reuse a gating template
 
 Export a gate tree from a manually gated reference sample:
@@ -114,12 +117,23 @@ Use selected gated populations for integrated dimensionality reduction
 and clustering.
 
 ```r
+# channel names extract:
+project$get_channel_info(sample_id = 'A1')
+
+```
+
+```r
+# marker names can be these typed on the machine
+# alternatively, the channel name also works
+# cytoTerra will automatically match the marker name or channel name
+
 cluster_markers <- c(
   "CD69", "MHCII", "TCF7-TCF-1", "CD62L", "CD44",
   "IFNg", "CD25", "CD103", "GranzymeB", "CD8a",
   "GATA3", "PD-1", "CD5", "TOX", "Nkp46", "CD127",
   "Ki-67", "CCR7", "Tim-3", "FOXP3", "LAG-3"
 )
+
 
 project$run_harmony_umap_flowsom_fastpg(
   result_name = "run1",
@@ -136,23 +150,17 @@ str(clustering_data)
 
 ```
 
-Then include a brief “planned visualization” note:
-
-```markdown
-### Visualization
+### Visualization 
 
 Built-in visualization functions for UMAPs, marker feature plots,
 cluster-composition dot plots, and related summaries are under active
 development.
 
-In the meantime, clustering results can be extracted directly:
+In the meantime, clustering results can be extracted directly for custom plot:
 
 ```r
 clustering_data <- project$clustering_results[["run1"]]
 ```
-
-
-One important adjustment: use named arguments in README examples—e.g., `from_sample = "H1"` rather than `project$copy_gate_tree("H2")`. It makes the intended source sample unambiguous and prevents the comment/code mismatch.
 
 ## R dependencies
 
