@@ -1,0 +1,1200 @@
+cytoTerra_methods_gating_workspace <- list(
+
+# -------------------------------------------------------------------
+# Launch a single-sample interactive manual-gating workspace.
+#
+# The workspace does not directly change the project. It generates
+# add_polygon_gate() and add_range_gate() commands for the user to
+# copy into an R cell and run deliberately.
+# -------------------------------------------------------------------
+launch_gating_workspace = function(
+    sample_id,
+    start_gate = "root",
+    n_plot = 30000L,
+    transform = c("asinh", "log1p", "none"),
+    cofactor = 150,
+    point_size = 3,
+    project_name = "project",
+    shiny_port = 3838L,
+    ood_origin = "https://ood-bouchet.ycrc.yale.edu"
+) {
+
+  transform <- match.arg(transform)
+
+  cytoTerra_validate_sample_ids(self, sample_id)
+
+  if (!is.character(start_gate) ||
+      length(start_gate) != 1L ||
+      is.na(start_gate) ||
+      !nzchar(start_gate)) {
+    stop(
+      "`start_gate` must be one non-empty gate name or 'root'.",
+      call. = FALSE
+    )
+  }
+
+  if (!identical(start_gate, "root") &&
+      is.null(self$get_gates(sample_id, start_gate))) {
+    stop(
+      "No gate named '", start_gate,
+      "' was found for sample '", sample_id, "'.",
+      call. = FALSE
+    )
+  }
+
+  if (!is.numeric(n_plot) ||
+      length(n_plot) != 1L ||
+      is.na(n_plot) ||
+      !is.finite(n_plot) ||
+      n_plot < 100L) {
+    stop(
+      "`n_plot` must be one finite number of at least 100.",
+      call. = FALSE
+    )
+  }
+
+  if (!is.numeric(cofactor) ||
+      length(cofactor) != 1L ||
+      is.na(cofactor) ||
+      !is.finite(cofactor) ||
+      cofactor <= 0) {
+    stop(
+      "`cofactor` must be one positive finite number.",
+      call. = FALSE
+    )
+  }
+
+  if (!is.numeric(point_size) ||
+      length(point_size) != 1L ||
+      is.na(point_size) ||
+      !is.finite(point_size) ||
+      point_size <= 0) {
+    stop(
+      "`point_size` must be one positive finite number.",
+      call. = FALSE
+    )
+  }
+
+  if (!is.character(project_name) ||
+      length(project_name) != 1L ||
+      is.na(project_name) ||
+      !nzchar(project_name)) {
+    stop(
+      "`project_name` must be one non-empty character value.",
+      call. = FALSE
+    )
+  }
+
+  if (!is.numeric(shiny_port) ||
+      length(shiny_port) != 1L ||
+      is.na(shiny_port) ||
+      !is.finite(shiny_port) ||
+      shiny_port != as.integer(shiny_port) ||
+      shiny_port < 1024L ||
+      shiny_port > 65535L) {
+    stop(
+      "`shiny_port` must be one integer between 1024 and 65535.",
+      call. = FALSE
+    )
+  }
+
+  shiny_port <- as.integer(shiny_port)
+
+  if (!is.character(ood_origin) ||
+      length(ood_origin) != 1L ||
+      is.na(ood_origin) ||
+      !nzchar(ood_origin) ||
+      !grepl("^https?://", ood_origin)) {
+    stop(
+      "`ood_origin` must be one non-empty http(s) URL.",
+      call. = FALSE
+    )
+  }
+
+  # Remove a trailing slash so the URL below has exactly one slash
+  # between the OOD origin and /node/.
+  ood_origin <- sub("/+$", "", ood_origin)
+
+  if (!requireNamespace("shiny", quietly = TRUE)) {
+    stop(
+      "`launch_gating_workspace()` requires the shiny package.",
+      call. = FALSE
+    )
+  }
+
+  if (!requireNamespace("plotly", quietly = TRUE)) {
+    stop(
+      "`launch_gating_workspace()` requires the plotly package.",
+      call. = FALSE
+    )
+  }
+
+  flow_frame <- self$get_flow_frame(sample_id)
+  expression_matrix <- flowCore::exprs(flow_frame)
+  available_channels <- colnames(expression_matrix)
+
+  if (length(available_channels) == 0L) {
+    stop(
+      "Sample '", sample_id,
+      "' has no expression-matrix channels.",
+      call. = FALSE
+    )
+  }
+
+  # Use a stable, local reference to this R6 object inside Shiny.
+  project <- self
+
+  r_string <- function(value) {
+    encodeString(as.character(value), quote = "\"")
+  }
+
+  transform_values <- function(values, transform, cofactor) {
+    switch(
+      transform,
+      asinh = asinh(values / cofactor),
+      log1p = log1p(values),
+      none = values
+    )
+  }
+
+  transform_label <- function(transform, cofactor) {
+    switch(
+      transform,
+      asinh = paste0("asinh(x / ", signif(cofactor, 6), ")"),
+      log1p = "log1p(x)",
+      none = "raw FCS scale"
+    )
+  }
+
+  # Extract the newest Plotly-drawn SVG path from a relayout event.
+  get_path_from_relayout <- function(relayout) {
+    if (is.null(relayout) || length(relayout) == 0L) {
+      return(NULL)
+    }
+
+    relayout_names <- names(relayout)
+
+    if (!is.null(relayout_names)) {
+      path_names <- grep(
+        "^shapes\\[[0-9]+\\]\\.path$",
+        relayout_names,
+        value = TRUE
+      )
+
+      if (length(path_names) > 0L) {
+        path <- relayout[[path_names[[length(path_names)]]]]
+
+        if (is.character(path) &&
+            length(path) == 1L &&
+            !is.na(path) &&
+            nzchar(path)) {
+          return(path)
+        }
+      }
+    }
+
+    # Some Plotly versions return a replacement shapes list.
+    if (is.list(relayout) &&
+        !is.null(relayout$shapes) &&
+        is.list(relayout$shapes)) {
+    
+      shapes <- relayout$shapes
+    
+      for (i in rev(seq_along(shapes))) {
+        shape <- shapes[[i]]
+    
+        if (is.list(shape) &&
+            !is.null(shape$path) &&
+            is.character(shape$path) &&
+            length(shape$path) == 1L &&
+            !is.na(shape$path) &&
+            nzchar(shape$path)) {
+          return(shape$path)
+        }
+      }
+    }
+
+    NULL
+  }
+
+  # Parse Plotly SVG paths of the form:
+  # M 1,2 L 3,4 L 5,6 Z
+  polygon_from_path <- function(path) {
+    if (is.null(path) ||
+        !is.character(path) ||
+        length(path) != 1L ||
+        is.na(path) ||
+        !nzchar(path)) {
+      return(NULL)
+    }
+
+    number_matches <- regmatches(
+      path,
+      gregexpr(
+        "[-+]?(?:\\d*\\.?\\d+)(?:[eE][-+]?\\d+)?",
+        path,
+        perl = TRUE
+      )
+    )[[1L]]
+
+    if (length(number_matches) < 6L ||
+        length(number_matches) %% 2L != 0L) {
+      return(NULL)
+    }
+
+    values <- suppressWarnings(as.numeric(number_matches))
+
+    if (any(!is.finite(values))) {
+      return(NULL)
+    }
+
+    coordinates <- data.frame(
+      x = values[seq(1L, length(values), by = 2L)],
+      y = values[seq(2L, length(values), by = 2L)]
+    )
+
+    # Plotly may repeat the starting point at the end.
+    if (nrow(coordinates) >= 4L &&
+        identical(coordinates$x[[1L]], coordinates$x[[nrow(coordinates)]]) &&
+        identical(coordinates$y[[1L]], coordinates$y[[nrow(coordinates)]])) {
+      coordinates <- coordinates[-nrow(coordinates), , drop = FALSE]
+    }
+
+    if (nrow(coordinates) < 3L) {
+      return(NULL)
+    }
+
+    coordinates
+  }
+
+  ui <- shiny::fluidPage(
+
+    shiny::tags$head(
+      shiny::tags$style(
+        shiny::HTML("
+          .cytoTerra-tree {
+            font-family: monospace;
+            font-size: 0.9em;
+            white-space: pre-wrap;
+            max-height: 360px;
+            overflow-y: auto;
+            border: 1px solid #d9d9d9;
+            border-radius: 4px;
+            background: #fafafa;
+            padding: 10px;
+          }
+
+          .cytoTerra-status {
+            margin-top: 8px;
+            padding: 8px;
+            border-radius: 4px;
+            background: #f5f5f5;
+          }
+
+          .cytoTerra-section-title {
+            font-weight: 600;
+            margin-top: 8px;
+            margin-bottom: 5px;
+          }
+        ")
+      )
+    ),
+
+    shiny::titlePanel(
+      paste0(
+        "cytoTerra manual gating workspace — ",
+        sample_id
+      )
+    ),
+
+    shiny::fluidRow(
+
+      # -------------------------------------------------------------
+      # Left navigation / gate creation controls.
+      # -------------------------------------------------------------
+      shiny::column(
+        width = 3,
+
+        shiny::h4("Gate hierarchy"),
+
+        shiny::verbatimTextOutput("gate_tree"),
+
+        shiny::actionButton(
+          inputId = "refresh_tree",
+          label = "Refresh gate tree"
+        ),
+
+        shiny::tags$hr(),
+
+        shiny::div(
+          class = "cytoTerra-section-title",
+          "Current parent population"
+        ),
+
+        shiny::textOutput("current_gate_text"),
+
+        shiny::fluidRow(
+          shiny::column(
+            width = 6,
+            shiny::actionButton(
+              inputId = "go_parent",
+              label = "Up to parent",
+              width = "100%"
+            )
+          ),
+          shiny::column(
+            width = 6,
+            shiny::actionButton(
+              inputId = "go_root",
+              label = "Go to root",
+              width = "100%"
+            )
+          )
+        ),
+
+        shiny::br(),
+
+        shiny::uiOutput("children_ui"),
+
+        shiny::actionButton(
+          inputId = "go_child",
+          label = "Go to selected child",
+          width = "100%"
+        ),
+
+        shiny::tags$hr(),
+
+        shiny::h4("Create child gate"),
+
+        shiny::textInput(
+          inputId = "gate_name",
+          label = "New gate name",
+          value = ""
+        ),
+
+        shiny::radioButtons(
+          inputId = "gate_mode",
+          label = "Gate type",
+          choices = c(
+            "2D polygon gate" = "polygon",
+            "1D histogram/range gate" = "range"
+          ),
+          selected = "polygon"
+        ),
+
+        shiny::selectInput(
+          inputId = "plot_transform",
+          label = "Display transformation",
+          choices = c(
+            "asinh" = "asinh",
+            "log1p" = "log1p",
+            "Raw FCS scale" = "none"
+          ),
+          selected = transform
+        ),
+
+        shiny::numericInput(
+          inputId = "plot_cofactor",
+          label = "asinh cofactor",
+          value = cofactor,
+          min = 0.000001,
+          step = 10
+        ),
+
+        shiny::actionButton(
+          inputId = "redraw",
+          label = "Redraw display",
+          width = "100%"
+        )
+      ),
+
+      # -------------------------------------------------------------
+      # Main plot and generated code.
+      # -------------------------------------------------------------
+      shiny::column(
+        width = 9,
+
+        shiny::uiOutput("parameter_controls"),
+
+        plotly::plotlyOutput(
+          outputId = "gate_plot",
+          height = "570px"
+        ),
+
+        shiny::fluidRow(
+          shiny::column(
+            width = 4,
+            shiny::actionButton(
+              inputId = "generate_polygon",
+              label = "Generate polygon-gate R code",
+              width = "100%"
+            )
+          ),
+          shiny::column(
+            width = 4,
+            shiny::actionButton(
+              inputId = "generate_range",
+              label = "Generate range-gate R code",
+              width = "100%"
+            )
+          ),
+          shiny::column(
+            width = 4,
+            shiny::actionButton(
+              inputId = "clear_code",
+              label = "Clear generated code",
+              width = "100%"
+            )
+          )
+        ),
+
+        shiny::div(
+          class = "cytoTerra-status",
+          shiny::textOutput("status")
+        ),
+
+        shiny::tags$br(),
+
+        shiny::textAreaInput(
+          inputId = "generated_code",
+          label = "Generated R code",
+          value = paste(
+            "# Draw a polygon or enter histogram range boundaries.",
+            "# Then generate R code and copy it into an R cell.",
+            sep = "\n"
+          ),
+          rows = 18,
+          width = "100%"
+        ),
+
+        shiny::tags$p(
+          shiny::tags$strong("Important: "),
+          "Generating code does not modify the project. ",
+          "Review and run the generated command in an R cell, then ",
+          "refresh or relaunch the workspace to see the new gate."
+        )
+      )
+    )
+  )
+
+  server <- function(input, output, session) {
+
+    current_gate <- shiny::reactiveVal(start_gate)
+    latest_polygon_path <- shiny::reactiveVal(NULL)
+    status_message <- shiny::reactiveVal(
+      "Select a parent population, choose parameters, then draw or define a gate."
+    )
+
+    current_parent_mask <- shiny::reactive({
+
+      gate_name <- current_gate()
+
+      if (identical(gate_name, "root")) {
+        return(rep(TRUE, nrow(expression_matrix)))
+      }
+
+      project$evaluate_gate(
+        sample_id = sample_id,
+        gate_name = gate_name
+      )
+    })
+
+    output$current_gate_text <- shiny::renderText({
+      gate_name <- current_gate()
+
+      if (identical(gate_name, "root")) {
+        return("root — all sample events")
+      }
+
+      gate <- project$get_gates(
+        sample_id = sample_id,
+        gate_name = gate_name
+      )
+
+      paste0(
+        gate_name,
+        " [",
+        gate$type,
+        "]"
+      )
+    })
+
+    output$gate_tree <- shiny::renderText({
+
+      input$refresh_tree
+
+      tree <- project$get_gate_tree(
+        sample_id = sample_id,
+        include_root = TRUE
+      )
+
+      paste(
+        paste0(
+          strrep("  ", tree$depth),
+          ifelse(tree$depth == 0L, "", "└─ "),
+          tree$gate_name,
+          " [",
+          tree$type,
+          "]"
+        ),
+        collapse = "\n"
+      )
+    })
+
+    output$children_ui <- shiny::renderUI({
+
+      children <- project$get_child_gates(
+        sample_id = sample_id,
+        parent_gate = current_gate(),
+        recursive = FALSE
+      )
+
+      if (length(children) == 0L) {
+        return(
+          shiny::tagList(
+            shiny::tags$p("This population has no child gates."),
+            shiny::selectInput(
+              inputId = "child_gate",
+              label = "Child gate",
+              choices = character(0)
+            )
+          )
+        )
+      }
+
+      shiny::selectInput(
+        inputId = "child_gate",
+        label = "Child gate",
+        choices = children
+      )
+    })
+
+    shiny::observeEvent(input$go_parent, {
+
+      gate_name <- current_gate()
+
+      if (identical(gate_name, "root")) {
+        status_message("Already at root.")
+        return()
+      }
+
+      parent_gate <- project$get_parent_gate(
+        sample_id = sample_id,
+        gate_name = gate_name
+      )
+
+      current_gate(parent_gate)
+      latest_polygon_path(NULL)
+
+      status_message(
+        paste0("Current parent changed to '", parent_gate, "'.")
+      )
+    })
+
+    shiny::observeEvent(input$go_root, {
+      current_gate("root")
+      latest_polygon_path(NULL)
+      status_message("Current parent changed to root.")
+    })
+
+    shiny::observeEvent(input$go_child, {
+
+      selected_child <- input$child_gate
+
+      if (is.null(selected_child) ||
+          !nzchar(selected_child)) {
+        status_message("Select a child gate first.")
+        return()
+      }
+
+      current_gate(selected_child)
+      latest_polygon_path(NULL)
+
+      status_message(
+        paste0("Current parent changed to '", selected_child, "'.")
+      )
+    })
+
+    output$parameter_controls <- shiny::renderUI({
+
+      if (identical(input$gate_mode, "polygon")) {
+        return(
+          shiny::fluidRow(
+            shiny::column(
+              width = 6,
+              shiny::selectInput(
+                inputId = "x_channel",
+                label = "X parameter",
+                choices = available_channels,
+                selected = available_channels[[1L]]
+              )
+            ),
+            shiny::column(
+              width = 6,
+              shiny::selectInput(
+                inputId = "y_channel",
+                label = "Y parameter",
+                choices = available_channels,
+                selected = if (length(available_channels) >= 2L) {
+                  available_channels[[2L]]
+                } else {
+                  available_channels[[1L]]
+                }
+              )
+            )
+          )
+        )
+      }
+
+      shiny::fluidRow(
+        shiny::column(
+          width = 4,
+          shiny::selectInput(
+            inputId = "range_channel",
+            label = "Histogram parameter",
+            choices = available_channels,
+            selected = available_channels[[1L]]
+          )
+        ),
+        shiny::column(
+          width = 4,
+          shiny::numericInput(
+            inputId = "range_lower",
+            label = "Lower bound on displayed scale",
+            value = 0
+          )
+        ),
+        shiny::column(
+          width = 4,
+          shiny::numericInput(
+            inputId = "range_upper",
+            label = "Upper bound on displayed scale",
+            value = 1
+          )
+        )
+      )
+    })
+
+    plotted_data <- shiny::reactive({
+
+      # Explicit dependency: pressing Redraw resets/recreates plotting data.
+      input$redraw
+
+      parent_mask <- current_parent_mask()
+      parent_index <- which(parent_mask)
+
+      if (length(parent_index) == 0L) {
+        return(NULL)
+      }
+
+      plot_index <- if (length(parent_index) <= n_plot) {
+        parent_index
+      } else {
+        sample(
+          parent_index,
+          size = as.integer(n_plot),
+          replace = FALSE
+        )
+      }
+
+      list(
+        index = plot_index,
+        transform = input$plot_transform,
+        cofactor = input$plot_cofactor
+      )
+    })
+
+    output$gate_plot <- plotly::renderPlotly({
+
+      plot_data <- plotted_data()
+
+      shiny::req(plot_data)
+
+      current_transform <- plot_data$transform
+      current_cofactor <- plot_data$cofactor
+
+      if (!is.numeric(current_cofactor) ||
+          length(current_cofactor) != 1L ||
+          is.na(current_cofactor) ||
+          !is.finite(current_cofactor) ||
+          current_cofactor <= 0) {
+        current_cofactor <- 150
+      }
+
+      if (identical(input$gate_mode, "polygon")) {
+
+        shiny::req(input$x_channel, input$y_channel)
+
+        if (identical(input$x_channel, input$y_channel)) {
+          return(
+            plotly::plot_ly() |>
+              plotly::layout(
+                title = "Choose two different parameters for a polygon gate."
+              )
+          )
+        }
+
+        x_raw <- expression_matrix[
+          plot_data$index,
+          input$x_channel
+        ]
+
+        y_raw <- expression_matrix[
+          plot_data$index,
+          input$y_channel
+        ]
+
+        valid <- is.finite(x_raw) & is.finite(y_raw)
+
+        if (identical(current_transform, "log1p")) {
+          valid <- valid & x_raw >= 0 & y_raw >= 0
+        }
+
+        x_display <- transform_values(
+          x_raw[valid],
+          transform = current_transform,
+          cofactor = current_cofactor
+        )
+
+        y_display <- transform_values(
+          y_raw[valid],
+          transform = current_transform,
+          cofactor = current_cofactor
+        )
+          
+        p <- plotly::plot_ly(
+          data = data.frame(
+            x = x_display,
+            y = y_display
+          ),
+          x = ~x,
+          y = ~y,
+          type = "scattergl",
+          mode = "markers",
+          source = "gate_plot_source",
+          marker = list(
+            color = "#1F77B4",
+            size = point_size,
+            opacity = 0.38
+          ),
+          hoverinfo = "skip"
+        ) |>
+          plotly::layout(
+            title = paste0(
+              sample_id,
+              " — parent: ",
+              current_gate(),
+              "<br><sup>",
+              sum(current_parent_mask()),
+              " parent events; draw a closed polygon for a new child gate</sup>"
+            ),
+            xaxis = list(
+              title = paste0(
+                input$x_channel,
+                " (",
+                transform_label(current_transform, current_cofactor),
+                ")"
+              ),
+              zeroline = FALSE
+            ),
+            yaxis = list(
+              title = paste0(
+                input$y_channel,
+                " (",
+                transform_label(current_transform, current_cofactor),
+                ")"
+              ),
+              zeroline = FALSE
+            ),
+            dragmode = "drawclosedpath"
+          ) |>
+          plotly::config(
+            displaylogo = FALSE,
+            editable = TRUE,
+            edits = list(shapePosition = TRUE),
+            modeBarButtonsToAdd = c(
+              "drawclosedpath",
+              "eraseshape"
+            )
+          )
+        
+        plotly::event_register(p, "plotly_relayout")
+          
+      } else {
+
+        shiny::req(input$range_channel)
+
+        values_raw <- expression_matrix[
+          plot_data$index,
+          input$range_channel
+        ]
+
+        valid <- is.finite(values_raw)
+
+        if (identical(current_transform, "log1p")) {
+          valid <- valid & values_raw >= 0
+        }
+
+        values_display <- transform_values(
+          values_raw[valid],
+          transform = current_transform,
+          cofactor = current_cofactor
+        )
+
+        plotly::plot_ly(
+          x = values_display,
+          type = "histogram",
+          source = "gate_plot_source",
+          marker = list(
+            color = "#1F77B4"
+          ),
+          hoverinfo = "x+y"
+        ) |>
+          plotly::layout(
+            title = paste0(
+              sample_id,
+              " — parent: ",
+              current_gate(),
+              "<br><sup>Enter lower and upper range bounds above.</sup>"
+            ),
+            xaxis = list(
+              title = paste0(
+                input$range_channel,
+                " (",
+                transform_label(
+                  current_transform,
+                  current_cofactor
+                ),
+                ")"
+              )
+            ),
+            yaxis = list(title = "Event count"),
+            dragmode = "select"
+          ) |>
+          plotly::config(
+            displaylogo = FALSE
+          )
+      }
+    })
+
+    # Capture the newly drawn polygon immediately after Plotly sends a
+    # relayout event. This is equivalent in purpose to your working
+    # onRender() implementation, but uses Shiny's reactive event channel.
+    shiny::observeEvent(
+      plotly::event_data(
+        "plotly_relayout",
+        source = "gate_plot_source"
+      ),
+      {
+
+        relayout <- plotly::event_data(
+          "plotly_relayout",
+          source = "gate_plot_source"
+        )
+
+        path <- get_path_from_relayout(relayout)
+
+        if (!is.null(path)) {
+          latest_polygon_path(path)
+
+          status_message(
+            "Replacement polygon detected. Enter a gate name and generate polygon-gate R code."
+          )
+        }
+      },
+      ignoreInit = TRUE
+    )
+
+    shiny::observeEvent(input$generate_polygon, {
+
+      if (!identical(input$gate_mode, "polygon")) {
+        status_message(
+          "Choose “2D polygon gate” before generating polygon-gate code."
+        )
+        return()
+      }
+
+      gate_name <- trimws(input$gate_name)
+
+      if (!nzchar(gate_name)) {
+        status_message("Enter a new gate name first.")
+        return()
+      }
+
+      if (identical(gate_name, "root")) {
+        status_message("The name 'root' is reserved.")
+        return()
+      }
+
+      if (!is.null(project$get_gates(sample_id, gate_name))) {
+        status_message(
+          paste0(
+            "A gate named '", gate_name,
+            "' already exists. Use the polygon editor to replace it."
+          )
+        )
+        return()
+      }
+
+      if (is.null(input$x_channel) ||
+          is.null(input$y_channel) ||
+          identical(input$x_channel, input$y_channel)) {
+        status_message(
+          "Select two different X/Y parameters before generating code."
+        )
+        return()
+      }
+
+      coordinates <- polygon_from_path(latest_polygon_path())
+
+      if (is.null(coordinates)) {
+        status_message(
+          paste(
+            "No readable polygon was found.",
+            "Choose Draw closed shape in the Plotly toolbar,",
+            "draw a polygon, and close it before generating code."
+          )
+        )
+        return()
+      }
+
+      current_transform <- input$plot_transform
+      current_cofactor <- input$plot_cofactor
+
+      x_values <- paste(
+        formatC(
+          coordinates$x,
+          digits = 12,
+          format = "fg",
+          flag = "#"
+        ),
+        collapse = ", "
+      )
+
+      y_values <- paste(
+        formatC(
+          coordinates$y,
+          digits = 12,
+          format = "fg",
+          flag = "#"
+        ),
+        collapse = ", "
+      )
+
+      command <- paste0(
+        project_name, "$add_polygon_gate(\n",
+        "  sample_id = ", r_string(sample_id), ",\n",
+        "  gate_name = ", r_string(gate_name), ",\n",
+        "  parent = ", r_string(current_gate()), ",\n",
+        "  x_channel = ", r_string(input$x_channel), ",\n",
+        "  y_channel = ", r_string(input$y_channel), ",\n",
+        "  coordinates = data.frame(\n",
+        "    x = c(", x_values, "),\n",
+        "    y = c(", y_values, ")\n",
+        "  ),\n",
+        "  coordinate_scale = \"transformed\",\n",
+        "  transform = ", r_string(current_transform), ",\n",
+        "  cofactor = ", formatC(
+          current_cofactor,
+          digits = 12,
+          format = "fg",
+          flag = "#"
+        ), ",\n",
+        "  x_channel_description = ", r_string(input$x_channel), ",\n",
+        "  y_channel_description = ", r_string(input$y_channel), ",\n",
+        "  note = \"Manual polygon gate created in gating workspace.\"\n",
+        ")"
+      )
+
+      shiny::updateTextAreaInput(
+        session = session,
+        inputId = "generated_code",
+        value = command
+      )
+
+      status_message(
+        paste0(
+          nrow(coordinates),
+          " polygon vertices captured. Review and run the generated R command."
+        )
+      )
+    })
+
+    shiny::observeEvent(input$generate_range, {
+
+      if (!identical(input$gate_mode, "range")) {
+        status_message(
+          "Choose “1D histogram/range gate” before generating range-gate code."
+        )
+        return()
+      }
+
+      gate_name <- trimws(input$gate_name)
+
+      if (!nzchar(gate_name)) {
+        status_message("Enter a new gate name first.")
+        return()
+      }
+
+      if (identical(gate_name, "root")) {
+        status_message("The name 'root' is reserved.")
+        return()
+      }
+
+      if (!is.null(project$get_gates(sample_id, gate_name))) {
+        status_message(
+          paste0(
+            "A gate named '", gate_name,
+            "' already exists."
+          )
+        )
+        return()
+      }
+
+      lower <- input$range_lower
+      upper <- input$range_upper
+
+      if (!is.numeric(lower) ||
+          !is.numeric(upper) ||
+          length(lower) != 1L ||
+          length(upper) != 1L ||
+          is.na(lower) ||
+          is.na(upper) ||
+          !is.finite(lower) ||
+          !is.finite(upper) ||
+          lower >= upper) {
+        status_message(
+          "Enter finite displayed-scale boundaries with lower < upper."
+        )
+        return()
+      }
+
+      current_transform <- input$plot_transform
+      current_cofactor <- input$plot_cofactor
+
+      command <- paste0(
+        project_name, "$add_range_gate(\n",
+        "  sample_id = ", r_string(sample_id), ",\n",
+        "  gate_name = ", r_string(gate_name), ",\n",
+        "  parent = ", r_string(current_gate()), ",\n",
+        "  channel = ", r_string(input$range_channel), ",\n",
+        "  lower = ", formatC(
+          lower,
+          digits = 12,
+          format = "fg",
+          flag = "#"
+        ), ",\n",
+        "  upper = ", formatC(
+          upper,
+          digits = 12,
+          format = "fg",
+          flag = "#"
+        ), ",\n",
+        "  coordinate_scale = \"transformed\",\n",
+        "  transform = ", r_string(current_transform), ",\n",
+        "  cofactor = ", formatC(
+          current_cofactor,
+          digits = 12,
+          format = "fg",
+          flag = "#"
+        ), ",\n",
+        "  channel_input = ", r_string(input$range_channel), ",\n",
+        "  channel_description = ", r_string(input$range_channel), ",\n",
+        "  note = \"Manual range gate created in gating workspace.\"\n",
+        ")"
+      )
+
+      shiny::updateTextAreaInput(
+        session = session,
+        inputId = "generated_code",
+        value = command
+      )
+
+      status_message(
+        "Range-gate command is ready. Review and run it in an R cell."
+      )
+    })
+
+    shiny::observeEvent(input$clear_code, {
+      shiny::updateTextAreaInput(
+        session = session,
+        inputId = "generated_code",
+        value = ""
+      )
+
+      status_message("Generated code cleared.")
+    })
+
+    output$status <- shiny::renderText({
+      status_message()
+    })
+  }
+
+  # -----------------------------------------------------------------
+  # Open OnDemand / Jupyter Server Proxy URL
+  #
+  # `host` and `port` are supplied dynamically by this Yale OOD
+  # Jupyter session. Do not use HOST: it can refer to the Conda
+  # toolchain rather than the allocated compute node.
+  # -----------------------------------------------------------------
+  compute_node <- Sys.getenv("host")
+  jupyter_port <- Sys.getenv("port")
+
+  if (!nzchar(compute_node) || !nzchar(jupyter_port)) {
+    stop(
+      paste(
+        "Could not obtain the current Open OnDemand compute node and",
+        "Jupyter port from environment variables `host` and `port`.",
+        "This function must be launched from the Yale Open OnDemand",
+        "Jupyter environment."
+      ),
+      call. = FALSE
+    )
+  }
+
+  shiny_url <- sprintf(
+    "%s/node/%s/%s/proxy/%s/",
+    ood_origin,
+    compute_node,
+    jupyter_port,
+    shiny_port
+  )
+
+  message(
+    "\n",
+    "============================================================\n",
+    "cytoTerra Shiny gating workspace\n",
+    "Open this URL in a new browser tab:\n",
+    shiny_url, "\n",
+    "============================================================\n"
+  )
+
+  # Display a clickable link when running in an IRkernel/Jupyter notebook.
+  # IRdisplay remains optional and therefore does not need to be in Imports.
+  if (requireNamespace("IRdisplay", quietly = TRUE)) {
+    IRdisplay::display_html(
+      sprintf(
+        paste0(
+          '<p><a href="%s" target="_blank" rel="noopener noreferrer">',
+          "Open cytoTerra manual-gating workspace",
+          "</a></p>"
+        ),
+        shiny_url
+      )
+    )
+  }
+
+  # Bind only to the local compute node. The Jupyter Server Proxy exposes
+  # the app securely through the URL printed above.
+  shiny::runApp(
+    shiny::shinyApp(ui = ui, server = server),
+    host = "127.0.0.1",
+    port = shiny_port,
+    launch.browser = FALSE
+  )
+
+  invisible(self)
+}
+
+)
+

@@ -1,0 +1,2342 @@
+# Gate manually check
+
+cytoTerra_methods_manual_gates <- list(
+  # Replace one stored polygon gate with manually supplied coordinates.
+  #'
+  #' Coordinates may be provided in raw FCS units or in the display
+  #' transformation used to review the gate. Existing gate metadata,
+  #' including its parent and channel definitions, is retained.
+  #'
+  #' @param sample_id One sample ID.
+  #' @param gate_name Name of an existing polygon gate.
+  #' @param coordinates Data frame with numeric `x` and `y` columns.
+  #' @param coordinate_scale Either "raw" or "transformed".
+  #' @param transform Transformation used when coordinates are supplied on a
+  #'   transformed display scale.
+  #' @param cofactor Asinh cofactor used for transformed coordinates.
+  #' @param note Optional non-empty note describing the manual revision.
+  #' @param save_as_default Whether to save the revised gate as a default gate.
+  #'
+  #' @return Invisibly returns the CytoTerraProject object.
+  replace_polygon_gate = function(
+      sample_id,
+      gate_name,
+      coordinates,
+      coordinate_scale = c("raw", "transformed"),
+      transform = c("asinh", "log1p", "none"),
+      cofactor = 150,
+      note = NULL,
+      save_as_default = FALSE
+  ) {
+    coordinate_scale <- match.arg(coordinate_scale)
+    transform <- match.arg(transform)
+
+    cytoTerra_validate_sample_ids(self, sample_id)
+
+    if (!is.character(gate_name) ||
+        length(gate_name) != 1L ||
+        is.na(gate_name) ||
+        !nzchar(gate_name)) {
+      stop(
+        "`gate_name` must be one non-empty character value.",
+        call. = FALSE
+      )
+    }
+
+    if (!is.data.frame(coordinates) ||
+        !all(c("x", "y") %in% names(coordinates)) ||
+        nrow(coordinates) < 3L) {
+      stop(
+        "`coordinates` must be a data frame with numeric `x` and `y` ",
+        "columns and at least three vertices.",
+        call. = FALSE
+      )
+    }
+
+    coordinates <- coordinates[, c("x", "y"), drop = FALSE]
+
+    if (!is.numeric(coordinates$x) ||
+        !is.numeric(coordinates$y) ||
+        any(!is.finite(coordinates$x)) ||
+        any(!is.finite(coordinates$y))) {
+      stop(
+        "`coordinates$x` and `coordinates$y` must contain finite numeric values.",
+        call. = FALSE
+      )
+    }
+
+    if (!is.numeric(cofactor) ||
+        length(cofactor) != 1L ||
+        is.na(cofactor) ||
+        !is.finite(cofactor) ||
+        cofactor <= 0) {
+      stop("`cofactor` must be one positive finite number.", call. = FALSE)
+    }
+
+    if (!is.null(note) &&
+        (!is.character(note) ||
+         length(note) != 1L ||
+         is.na(note) ||
+         !nzchar(note))) {
+      stop(
+        "`note` must be NULL or one non-empty character value.",
+        call. = FALSE
+      )
+    }
+
+    old_gate <- self$get_gates(
+      sample_id = sample_id,
+      gate_name = gate_name
+    )
+
+    if (is.null(old_gate)) {
+      stop(
+        "No gate named '", gate_name,
+        "' was found for sample '", sample_id, "'.",
+        call. = FALSE
+      )
+    }
+
+    if (!identical(old_gate$type, "polygon")) {
+      stop(
+        "Gate '", gate_name,
+        "' for sample '", sample_id,
+        "' is type '", old_gate$type,
+        "', but `replace_polygon_gate()` requires type 'polygon'.",
+        call. = FALSE
+      )
+    }
+
+    cytoTerra_validate_polygon_gate(old_gate)
+
+    # Convert coordinates drawn on a transformed display back into raw FCS
+    # units before saving. cytoTerra always evaluates gates in raw units.
+    raw_coordinates <- if (identical(coordinate_scale, "raw")) {
+      coordinates
+    } else {
+      switch(
+        transform,
+        asinh = data.frame(
+          x = cofactor * sinh(coordinates$x),
+          y = cofactor * sinh(coordinates$y)
+        ),
+        log1p = data.frame(
+          x = expm1(coordinates$x),
+          y = expm1(coordinates$y)
+        ),
+        none = coordinates
+      )
+    }
+
+    if (any(!is.finite(raw_coordinates$x)) ||
+        any(!is.finite(raw_coordinates$y))) {
+      stop(
+        "Coordinate conversion produced non-finite raw values.",
+        call. = FALSE
+      )
+    }
+
+    revised_gate <- old_gate
+    revised_gate$coordinates <- raw_coordinates
+    revised_gate$method <- "manual_polygon_revision"
+
+    revised_gate$manual_revision <- list(
+      revised_at = Sys.time(),
+      coordinate_scale_supplied = coordinate_scale,
+      transform_supplied = if (identical(coordinate_scale, "transformed")) {
+        transform
+      } else {
+        NULL
+      },
+      cofactor_supplied = if (identical(coordinate_scale, "transformed") &&
+                              identical(transform, "asinh")) {
+        cofactor
+      } else {
+        NULL
+      },
+      note = note
+    )
+
+    self$update_gate(
+      sample_ids = sample_id,
+      gate_name = gate_name,
+      gate_definition = revised_gate,
+      save_as_default = save_as_default
+    )
+
+    message(
+      "Replaced polygon gate '", gate_name,
+      "' for sample '", sample_id,
+      "' with ", nrow(raw_coordinates), " manually supplied vertices."
+    )
+
+    invisible(self)
+  },
+
+  #' Interactively review and redraw one polygon gate.
+  #'
+  #' This method is intended for notebook/HTML-widget workflows. It displays
+  #' one gate's parent population, its current saved polygon, and controls for
+  #' extracting a manually drawn replacement polygon as R code.
+  #'
+  #' Gate coordinates are stored in raw FCS units. If the plot is displayed on
+  #' an asinh or log1p scale, the generated command records the drawn
+  #' coordinates as transformed coordinates for `replace_polygon_gate()`.
+  #'
+  #' @param sample_id One sample ID.
+  #' @param gate_name Name of an existing polygon gate.
+  #' @param n_plot Maximum number of parent events displayed.
+  #' @param transform Display transformation. `"gate"` uses the transformation
+  #'   stored in the gate; alternatives are `"asinh"`, `"log1p"`, and `"none"`.
+  #' @param cofactor Optional asinh cofactor for display. Defaults to the
+  #'   cofactor stored in the gate, or 150 if none is stored.
+  #' @param point_size Display point size.
+  #' @param parent_color Color for parent events outside the current gate.
+  #' @param gated_color Color for events inside the current saved gate.
+  #' @param gate_color Color for the current saved polygon.
+  #' @param width Plot width in pixels.
+  #' @param height Plot height in pixels.
+  #' @param project_name Name used in the generated R command.
+  #'
+  #' @return An HTML widget and controls for generating a
+  #'   `replace_polygon_gate()` command.
+  edit_polygon_gate = function(
+      sample_id,
+      gate_name,
+      n_plot = 30000L,
+      transform = c("gate", "asinh", "log1p", "none"),
+      cofactor = NULL,
+      point_size = 3,
+      parent_color = "#7F7F7F",
+      gated_color = "#1F77B4",
+      gate_color = "#D62728",
+      width = 700,
+      height = 500,
+      project_name = "project"
+  ) {
+    transform <- match.arg(transform)
+
+    cytoTerra_validate_sample_ids(self, sample_id)
+
+    if (!is.character(gate_name) ||
+        length(gate_name) != 1L ||
+        is.na(gate_name) ||
+        !nzchar(gate_name)) {
+      stop("`gate_name` must be one non-empty character value.", call. = FALSE)
+    }
+
+    if (!is.numeric(n_plot) ||
+        length(n_plot) != 1L ||
+        is.na(n_plot) ||
+        !is.finite(n_plot) ||
+        n_plot < 100L) {
+      stop("`n_plot` must be one finite number of at least 100.", call. = FALSE)
+    }
+
+    if (!is.null(cofactor) &&
+        (!is.numeric(cofactor) ||
+         length(cofactor) != 1L ||
+         is.na(cofactor) ||
+         !is.finite(cofactor) ||
+         cofactor <= 0)) {
+      stop(
+        "`cofactor` must be NULL or one positive finite number.",
+        call. = FALSE
+      )
+    }
+
+    if (!is.numeric(point_size) ||
+        length(point_size) != 1L ||
+        is.na(point_size) ||
+        !is.finite(point_size) ||
+        point_size <= 0) {
+      stop("`point_size` must be one positive finite number.", call. = FALSE)
+    }
+
+    if (!is.numeric(width) ||
+        length(width) != 1L ||
+        is.na(width) ||
+        !is.finite(width) ||
+        width < 300) {
+      stop(
+        "`width` must be one finite number of at least 300 pixels.",
+        call. = FALSE
+      )
+    }
+
+    if (!is.numeric(height) ||
+        length(height) != 1L ||
+        is.na(height) ||
+        !is.finite(height) ||
+        height < 300) {
+      stop(
+        "`height` must be one finite number of at least 300 pixels.",
+        call. = FALSE
+      )
+    }
+
+    if (!is.character(project_name) ||
+        length(project_name) != 1L ||
+        is.na(project_name) ||
+        !nzchar(project_name)) {
+      stop(
+        "`project_name` must be one non-empty character value.",
+        call. = FALSE
+      )
+    }
+
+    gate <- self$get_gates(
+      sample_id = sample_id,
+      gate_name = gate_name
+    )
+
+    if (is.null(gate)) {
+      stop(
+        "No gate named '", gate_name,
+        "' was found for sample '", sample_id, "'.",
+        call. = FALSE
+      )
+    }
+
+    if (!identical(gate$type, "polygon")) {
+      stop(
+        "Gate '", gate_name,
+        "' for sample '", sample_id,
+        "' is type '", gate$type,
+        "', but `edit_polygon_gate()` requires a polygon gate.",
+        call. = FALSE
+      )
+    }
+
+    if (is.null(gate$channels) ||
+        !identical(names(gate$channels), c("x", "y"))) {
+      stop(
+        "Gate '", gate_name,
+        "' for sample '", sample_id,
+        "' has invalid x/y channel metadata.",
+        call. = FALSE
+      )
+    }
+
+    if (!is.data.frame(gate$coordinates) ||
+        !all(c("x", "y") %in% names(gate$coordinates)) ||
+        nrow(gate$coordinates) < 3L) {
+      stop(
+        "Gate '", gate_name,
+        "' for sample '", sample_id,
+        "' has invalid polygon coordinates.",
+        call. = FALSE
+      )
+    }
+
+    x_channel <- unname(gate$channels[["x"]])
+    y_channel <- unname(gate$channels[["y"]])
+
+    flow_frame <- self$get_flow_frame(sample_id)
+    expression_matrix <- flowCore::exprs(flow_frame)
+
+    missing_channels <- setdiff(
+      c(x_channel, y_channel),
+      colnames(expression_matrix)
+    )
+
+    if (length(missing_channels) > 0L) {
+      stop(
+        "Sample '", sample_id,
+        "' does not contain gate channel(s): ",
+        paste(missing_channels, collapse = ", "),
+        ".",
+        call. = FALSE
+      )
+    }
+
+    # "gate" means use the transformation stored with the existing gate.
+    plot_transform <- if (identical(transform, "gate")) {
+      if (!is.null(gate$transform)) {
+        gate$transform
+      } else {
+        "none"
+      }
+    } else {
+      transform
+    }
+
+    if (!plot_transform %in% c("asinh", "log1p", "none")) {
+      stop(
+        "Unsupported gate display transform: '", plot_transform, "'.",
+        call. = FALSE
+      )
+    }
+
+    plot_cofactor <- if (!is.null(cofactor)) {
+      cofactor
+    } else if (!is.null(gate$cofactor) &&
+               is.numeric(gate$cofactor) &&
+               length(gate$cofactor) == 1L &&
+               is.finite(gate$cofactor) &&
+               gate$cofactor > 0) {
+      gate$cofactor
+    } else {
+      150
+    }
+
+    gate_mask <- self$evaluate_gate(
+      sample_id = sample_id,
+      gate_name = gate_name
+    )
+
+    parent_mask <- if (identical(gate$parent, "root")) {
+      rep(TRUE, nrow(expression_matrix))
+    } else {
+      self$evaluate_gate(
+        sample_id = sample_id,
+        gate_name = gate$parent
+      )
+    }
+
+    parent_index <- which(parent_mask)
+
+    if (length(parent_index) == 0L) {
+      stop(
+        "Sample '", sample_id,
+        "' has no events in parent '", gate$parent, "'.",
+        call. = FALSE
+      )
+    }
+
+    plot_index <- if (length(parent_index) <= n_plot) {
+      parent_index
+    } else {
+      sample(
+        parent_index,
+        size = as.integer(n_plot),
+        replace = FALSE
+      )
+    }
+
+    x_raw <- expression_matrix[plot_index, x_channel]
+    y_raw <- expression_matrix[plot_index, y_channel]
+    plotted_gate_mask <- gate_mask[plot_index]
+
+    valid <- is.finite(x_raw) & is.finite(y_raw)
+
+    if (identical(plot_transform, "log1p")) {
+      valid <- valid & x_raw >= 0 & y_raw >= 0
+    }
+
+    x_raw <- x_raw[valid]
+    y_raw <- y_raw[valid]
+    plotted_gate_mask <- plotted_gate_mask[valid]
+
+    if (length(x_raw) == 0L) {
+      stop(
+        "No finite parent events are available to plot for sample '",
+        sample_id, "'.",
+        call. = FALSE
+      )
+    }
+
+    transform_values <- function(values) {
+      switch(
+        plot_transform,
+        asinh = asinh(values / plot_cofactor),
+        log1p = log1p(values),
+        none = values
+      )
+    }
+
+    x <- transform_values(x_raw)
+    y <- transform_values(y_raw)
+
+    polygon_x <- transform_values(gate$coordinates$x)
+    polygon_y <- transform_values(gate$coordinates$y)
+
+    if (!all(is.finite(polygon_x)) || !all(is.finite(polygon_y))) {
+      stop(
+        "The saved gate polygon cannot be displayed using transform '",
+        plot_transform, "'.",
+        call. = FALSE
+      )
+    }
+
+    outside_gate <- !plotted_gate_mask
+
+    events_in_parent <- sum(parent_mask)
+    events_in_gate <- sum(gate_mask)
+    fraction_of_parent <- events_in_gate / events_in_parent
+
+    x_marker <- if (!is.null(gate$channel_description[["x"]]) &&
+                    !is.na(gate$channel_description[["x"]]) &&
+                    nzchar(gate$channel_description[["x"]])) {
+      gate$channel_description[["x"]]
+    } else {
+      x_channel
+    }
+
+    y_marker <- if (!is.null(gate$channel_description[["y"]]) &&
+                    !is.na(gate$channel_description[["y"]]) &&
+                    nzchar(gate$channel_description[["y"]])) {
+      gate$channel_description[["y"]]
+    } else {
+      y_channel
+    }
+
+    transform_label <- switch(
+      plot_transform,
+      asinh = paste0("asinh(x / ", signif(plot_cofactor, 5), ")"),
+      log1p = "log1p(x)",
+      none = "raw FCS scale"
+    )
+
+    x_label <- paste0(x_marker, " (", x_channel, "; ", transform_label, ")")
+    y_label <- paste0(y_marker, " (", y_channel, "; ", transform_label, ")")
+
+    parent_data <- data.frame(
+      x = x[outside_gate],
+      y = y[outside_gate]
+    )
+
+    gated_data <- data.frame(
+      x = x[plotted_gate_mask],
+      y = y[plotted_gate_mask]
+    )
+
+    # Draw the saved polygon as a Plotly shape, rather than as a line trace.
+    # This produces a proper SVG polygon path and keeps it separate from any
+    # new polygon the user draws with Plotly's Draw closed shape tool.
+    saved_polygon_path <- paste0(
+      "M ",
+      paste(
+        sprintf("%.12g,%.12g", polygon_x, polygon_y),
+        collapse = " L "
+      ),
+      " Z"
+    )
+
+    widget <- plotly::plot_ly(
+      type = "scattergl",
+      mode = "markers",
+      width = as.integer(width),
+      height = as.integer(height)
+    )
+
+    if (nrow(parent_data) > 0L) {
+      widget <- plotly::add_markers(
+        widget,
+        data = parent_data,
+        x = ~x,
+        y = ~y,
+        name = "Parent outside current gate",
+        marker = list(
+          color = parent_color,
+          size = point_size,
+          opacity = 0.25
+        ),
+        hoverinfo = "skip"
+      )
+    }
+
+    if (nrow(gated_data) > 0L) {
+      widget <- plotly::add_markers(
+        widget,
+        data = gated_data,
+        x = ~x,
+        y = ~y,
+        name = "Inside current gate",
+        marker = list(
+          color = gated_color,
+          size = point_size,
+          opacity = 0.55
+        ),
+        hoverinfo = "skip"
+      )
+    }
+
+    widget <- plotly::layout(
+      widget,
+      title = paste0(
+        sample_id,
+        " — edit: ",
+        gate_name,
+        "<br><sup>",
+        events_in_gate,
+        " / ",
+        events_in_parent,
+        " parent events (",
+        formatC(100 * fraction_of_parent, format = "f", digits = 1),
+        "%); parent: ",
+        gate$parent,
+        "</sup>"
+      ),
+      xaxis = list(
+        title = x_label,
+        zeroline = FALSE
+      ),
+      yaxis = list(
+        title = y_label,
+        zeroline = FALSE
+      ),
+      shapes = list(
+        list(
+          type = "path",
+          path = saved_polygon_path,
+          xref = "x",
+          yref = "y",
+          line = list(
+            color = gate_color,
+            width = 3
+          ),
+          fillcolor = "rgba(0,0,0,0)",
+          layer = "above"
+        )
+      ),
+      dragmode = "drawclosedpath",
+      showlegend = TRUE,
+      legend = list(
+        orientation = "h"
+      ),
+      margin = list(
+        l = 75,
+        r = 25,
+        b = 70,
+        t = 90,
+        pad = 0
+      )
+    )
+
+    widget <- plotly::config(
+      widget,
+      displaylogo = FALSE,
+      editable = TRUE,
+      edits = list(
+        shapePosition = TRUE
+      ),
+      modeBarButtonsToAdd = c(
+        "drawclosedpath",
+        "eraseshape"
+      )
+    )
+
+    coordinate_scale <- if (identical(plot_transform, "none")) {
+      "raw"
+    } else {
+      "transformed"
+    }
+
+    widget_id <- paste0(
+      "cytoTerra-editor-",
+      gsub("[^A-Za-z0-9_-]", "-", sample_id),
+      "-",
+      gsub("[^A-Za-z0-9_-]", "-", gate_name),
+      "-",
+      as.integer(stats::runif(1L, 1, 1000000000L))
+    )
+
+    panel_id <- paste0(widget_id, "-panel")
+
+    widget <- htmlwidgets::onRender(
+      widget,
+      jsCode = "
+      function(el, x, data) {
+
+        function initialisePanel(attempt) {
+          var panel = document.getElementById(data.panel_id);
+
+          if (!panel) {
+            if (attempt < 30) {
+              window.setTimeout(function() {
+                initialisePanel(attempt + 1);
+              }, 50);
+            }
+            return;
+          }
+
+          var textArea = panel.querySelector('textarea');
+          var useButton = panel.querySelector('.cytoTerra-use-polygon');
+          var copyButton = panel.querySelector('.cytoTerra-copy-command');
+          var status = panel.querySelector('.cytoTerra-gate-status');
+
+          if (!textArea || !useButton || !copyButton || !status) {
+            console.error(
+              'cytoTerra: manual-gating controls could not be located.'
+            );
+            return;
+          }
+
+          // Path received directly from Plotly after a user draws or edits
+          // a shape. This is the preferred source in JupyterLab.
+          var newestDrawnPath = null;
+
+          function getPathFromRelayoutEvent(eventData) {
+            if (!eventData) {
+              return null;
+            }
+
+            var keys = Object.keys(eventData);
+
+            for (var i = 0; i < keys.length; i++) {
+              var key = keys[i];
+              var value = eventData[key];
+
+              // Typical Plotly drawing event:
+              // eventData['shapes[1].path'] = 'M 1,2 L 3,4 ... Z'
+              if (/^shapes\\[\\d+\\]\\.path$/.test(key) &&
+                  typeof value === 'string' &&
+                  value.length > 0) {
+                return value;
+              }
+
+              // Alternate event representation used by some Plotly versions.
+              if (/^shapes\\[\\d+\\]$/.test(key) &&
+                  value &&
+                  typeof value.path === 'string' &&
+                  value.path.length > 0) {
+                return value.path;
+              }
+            }
+
+            // Another possible representation is a replacement shapes array.
+            if (Array.isArray(eventData.shapes)) {
+              for (var j = eventData.shapes.length - 1; j >= 0; j--) {
+                if (eventData.shapes[j] &&
+                    typeof eventData.shapes[j].path === 'string' &&
+                    eventData.shapes[j].path.length > 0) {
+                  return eventData.shapes[j].path;
+                }
+              }
+            }
+
+            return null;
+          }
+
+          function polygonPointsFromPath(path) {
+            if (!path || typeof path !== 'string') {
+              return null;
+            }
+
+            // Handles ordinary, negative, decimal, and scientific-notation
+            // Plotly coordinates.
+            var matches = path.match(
+              /[-+]?(?:\\d*\\.?\\d+)(?:[eE][-+]?\\d+)?/g
+            );
+
+            if (!matches ||
+                matches.length < 6 ||
+                matches.length % 2 !== 0) {
+              return null;
+            }
+
+            var points = [];
+
+            for (var i = 0; i < matches.length; i += 2) {
+              var xValue = Number(matches[i]);
+              var yValue = Number(matches[i + 1]);
+
+              if (!Number.isFinite(xValue) ||
+                  !Number.isFinite(yValue)) {
+                return null;
+              }
+
+              points.push([xValue, yValue]);
+            }
+
+            // Plotly occasionally repeats the initial point when closing
+            // a polygon. It is unnecessary in the R data frame.
+            if (points.length >= 4) {
+              var first = points[0];
+              var last = points[points.length - 1];
+
+              if (first[0] === last[0] &&
+                  first[1] === last[1]) {
+                points.pop();
+              }
+            }
+
+            return points.length >= 3 ? points : null;
+          }
+
+          function getPolygonFromLayout() {
+            var shapes = [];
+
+            if (el.layout && Array.isArray(el.layout.shapes)) {
+              shapes = el.layout.shapes;
+            }
+
+            if (shapes.length === 0 &&
+                el._fullLayout &&
+                Array.isArray(el._fullLayout.shapes)) {
+              shapes = el._fullLayout.shapes;
+            }
+
+            // Search backward: the newest manually drawn shape should be last.
+            for (var i = shapes.length - 1; i >= 0; i--) {
+              var shape = shapes[i];
+
+              if (!shape || typeof shape.path !== 'string') {
+                continue;
+              }
+
+              // Ignore the saved red polygon, which was supplied at widget
+              // creation. A manually drawn polygon follows that initial shape.
+              if (i < data.saved_shape_count) {
+                continue;
+              }
+
+              var points = polygonPointsFromPath(shape.path);
+
+              if (points) {
+                return points;
+              }
+            }
+
+            return null;
+          }
+
+          function getDrawnPolygon() {
+            // First use the drawing event path, which is most reliable.
+            var points = polygonPointsFromPath(newestDrawnPath);
+
+            if (points) {
+              return points;
+            }
+
+            // Then try the live Plotly layout as a fallback.
+            return getPolygonFromLayout();
+          }
+
+          function numberString(value) {
+            return Number(value).toPrecision(12);
+          }
+
+          function createRCommand(points) {
+            var xValues = points.map(function(point) {
+              return numberString(point[0]);
+            }).join(', ');
+
+            var yValues = points.map(function(point) {
+              return numberString(point[1]);
+            }).join(', ');
+
+            return (
+              data.project_name + '$replace_polygon_gate(\\n' +
+              '  sample_id = ' + JSON.stringify(data.sample_id) + ',\\n' +
+              '  gate_name = ' + JSON.stringify(data.gate_name) + ',\\n' +
+              '  coordinates = data.frame(\\n' +
+              '    x = c(' + xValues + '),\\n' +
+              '    y = c(' + yValues + ')\\n' +
+              '  ),\\n' +
+              '  coordinate_scale = ' +
+              JSON.stringify(data.coordinate_scale) + ',\\n' +
+              '  transform = ' +
+              JSON.stringify(data.transform) + ',\\n' +
+              '  cofactor = ' +
+              numberString(data.cofactor) + ',\\n' +
+              '  note = ' +
+              JSON.stringify(
+                'Manual polygon revision from interactive review.'
+              ) + '\\n' +
+              ')'
+            );
+          }
+
+          // Capture shape paths immediately after Plotly drawing/editing.
+          el.on('plotly_relayout', function(eventData) {
+            var path = getPathFromRelayoutEvent(eventData);
+
+            if (path) {
+              newestDrawnPath = path;
+              status.textContent =
+                'Replacement polygon detected. Click Use drawn polygon.';
+            }
+          });
+
+          useButton.addEventListener('click', function() {
+            var points = getDrawnPolygon();
+
+            if (!points) {
+              status.textContent =
+                'No readable replacement polygon found. Draw and close a polygon, then try again.';
+              return;
+            }
+
+            textArea.value = createRCommand(points);
+
+            status.textContent =
+              points.length +
+              ' polygon vertices captured. The R command is ready to copy.';
+          });
+
+          copyButton.addEventListener('click', function() {
+            textArea.focus();
+            textArea.select();
+            textArea.setSelectionRange(0, 999999);
+
+            if (navigator.clipboard &&
+                navigator.clipboard.writeText) {
+              navigator.clipboard.writeText(textArea.value).then(
+                function() {
+                  status.textContent = 'R command copied to clipboard.';
+                },
+                function() {
+                  document.execCommand('copy');
+                  status.textContent =
+                    'R command selected; copy with Ctrl+C or Cmd+C.';
+                }
+              );
+            } else {
+              document.execCommand('copy');
+              status.textContent =
+                'R command selected; copy with Ctrl+C or Cmd+C.';
+            }
+          });
+
+          status.textContent =
+            'Draw a replacement polygon, then click Use drawn polygon.';
+        }
+
+        initialisePanel(0);
+      }
+      ",
+      data = list(
+        panel_id = panel_id,
+        sample_id = sample_id,
+        gate_name = gate_name,
+        project_name = project_name,
+        coordinate_scale = coordinate_scale,
+        transform = plot_transform,
+        cofactor = plot_cofactor,
+        saved_shape_count = 1L,
+
+        x_channel = x_channel,
+        y_channel = y_channel,
+        gate_color = gate_color,
+        initial_polygon_x = as.numeric(polygon_x),
+        initial_polygon_y = as.numeric(polygon_y)
+
+      )
+    )
+
+    command_panel <- htmltools::tags$div(
+      id = panel_id,
+      style = paste(
+        "margin-top: 12px;",
+        "padding: 12px;",
+        "border: 1px solid #cccccc;",
+        "border-radius: 5px;",
+        "font-family: sans-serif;",
+        "background: #fafafa;"
+      ),
+
+      htmltools::tags$div(
+        "Manual polygon replacement",
+        style = "font-weight: 600; margin-bottom: 6px;"
+      ),
+
+      htmltools::tags$div(
+        paste(
+          "Select Draw closed shape in the Plotly toolbar and draw a",
+          "replacement polygon. Click the first point again to close it.",
+          "Then click Use drawn polygon to generate R code.",
+          "Nothing is saved until you run that command in an R cell."
+        ),
+        style = "margin-bottom: 8px; font-size: 0.9em;"
+      ),
+
+      htmltools::tags$textarea(
+        readonly = "readonly",
+        rows = 12,
+        style = paste(
+          "width: 100%;",
+          "font-family: monospace;",
+          "font-size: 0.85em;",
+          "box-sizing: border-box;"
+        ),
+        "# Draw and close a replacement polygon.\n",
+        "# Then click Use drawn polygon to generate the R command."
+      ),
+
+      htmltools::tags$br(),
+
+      htmltools::tags$button(
+        "Use drawn polygon",
+        type = "button",
+        class = "cytoTerra-use-polygon",
+        style = "margin-top: 8px; margin-right: 8px;"
+      ),
+
+      htmltools::tags$button(
+        "Copy R command",
+        type = "button",
+        class = "cytoTerra-copy-command",
+        style = "margin-top: 8px;"
+      ),
+
+      htmltools::tags$span(
+        class = "cytoTerra-gate-status",
+        " Draw a replacement polygon, then click Use drawn polygon.",
+        style = "margin-left: 8px; font-size: 0.9em;"
+      )
+    )
+
+    htmltools::browsable(
+      htmltools::tagList(
+        widget,
+        command_panel
+      )
+    )
+  },
+
+  #' Interactively review and revise one polygon gate across multiple samples.
+  #'
+  #' Displays a page of independent Plotly polygon-gate editors. Each sample
+  #' has a fixed plot width and height. The grid is placed in a horizontally
+  #' scrollable container so that large plots remain readable even when the
+  #' notebook output area is narrower than the full grid.
+  #'
+  #' Draw a replacement polygon for a sample and click "Use drawn polygon"
+  #' below that plot. After revising one or more samples, click
+  #' "Generate merged R code" to create a combined block of
+  #' `replace_polygon_gate()` calls.
+  #'
+  #' @param gate_name Name of the polygon gate to review.
+  #' @param sample_ids Optional character vector of sample IDs to review. If
+  #'   `NULL`, all samples in the project are considered.
+  #' @param page Page number, beginning at 1.
+  #' @param n_col Number of sample plots per row.
+  #' @param n_row Number of plot rows per page.
+  #' @param n_plot Maximum number of parent events displayed per sample.
+  #' @param transform Display transform: `"gate"`, `"asinh"`, `"log1p"`, or
+  #'   `"none"`.
+  #' @param cofactor Optional asinh cofactor. If `NULL`, uses each gate's
+  #'   stored cofactor, or 150 when no valid stored cofactor exists.
+  #' @param point_size Marker size.
+  #' @param parent_color Color for parent events outside the saved gate.
+  #' @param gated_color Color for events inside the saved gate.
+  #' @param gate_color Color for the saved polygon.
+  #' @param width Fixed width, in pixels, of each sample plot.
+  #' @param height Fixed height, in pixels, of each sample plot.
+  #' @param project_name Name used in generated R code.
+  #'
+  #' @return A browsable HTML grid of Plotly gate editors, with merged code
+  #'   controls beneath the grid.
+edit_polygon_gate_batch = function(
+    gate_name,
+    sample_ids = NULL,
+    page = 1L,
+    n_col = 5L,
+    n_row = 2L,
+    n_plot = 12000L,
+    transform = c("gate", "asinh", "log1p", "none"),
+    cofactor = NULL,
+    point_size = 2,
+    parent_color = "#7F7F7F",
+    gated_color = "#1F77B4",
+    gate_color = "#D62728",
+    width = 500,
+    height = 420,
+    project_name = "project"
+) {
+
+  transform <- match.arg(transform)
+
+  # ---------------------------------------------------------------
+  # Validate arguments
+  # ---------------------------------------------------------------
+  if (!is.character(gate_name) ||
+      length(gate_name) != 1L ||
+      is.na(gate_name) ||
+      !nzchar(gate_name)) {
+    stop(
+      "`gate_name` must be one non-empty character value.",
+      call. = FALSE
+    )
+  }
+
+  if (is.null(sample_ids)) {
+    sample_ids <- self$get_sample_ids()
+  }
+
+  if (!is.character(sample_ids) ||
+      length(sample_ids) == 0L ||
+      anyNA(sample_ids) ||
+      any(!nzchar(sample_ids))) {
+    stop(
+      "`sample_ids` must be NULL or a non-empty character vector.",
+      call. = FALSE
+    )
+  }
+
+  sample_ids <- unique(sample_ids)
+
+  cytoTerra_validate_sample_ids(self, sample_ids)
+
+  validate_positive_integer <- function(value, argument_name) {
+    if (!is.numeric(value) ||
+        length(value) != 1L ||
+        is.na(value) ||
+        !is.finite(value) ||
+        value < 1L ||
+        value != as.integer(value)) {
+      stop(
+        "`", argument_name, "` must be one positive integer.",
+        call. = FALSE
+      )
+    }
+  }
+
+  validate_positive_integer(page, "page")
+  validate_positive_integer(n_col, "n_col")
+  validate_positive_integer(n_row, "n_row")
+
+  if (!is.numeric(n_plot) ||
+      length(n_plot) != 1L ||
+      is.na(n_plot) ||
+      !is.finite(n_plot) ||
+      n_plot < 100L) {
+    stop(
+      "`n_plot` must be one finite number of at least 100.",
+      call. = FALSE
+    )
+  }
+
+  if (!is.null(cofactor) &&
+      (!is.numeric(cofactor) ||
+       length(cofactor) != 1L ||
+       is.na(cofactor) ||
+       !is.finite(cofactor) ||
+       cofactor <= 0)) {
+    stop(
+      "`cofactor` must be NULL or one positive finite number.",
+      call. = FALSE
+    )
+  }
+
+  if (!is.numeric(point_size) ||
+      length(point_size) != 1L ||
+      is.na(point_size) ||
+      !is.finite(point_size) ||
+      point_size <= 0) {
+    stop(
+      "`point_size` must be one positive finite number.",
+      call. = FALSE
+    )
+  }
+
+  if (!is.numeric(width) ||
+      length(width) != 1L ||
+      is.na(width) ||
+      !is.finite(width) ||
+      width < 250L) {
+    stop(
+      "`width` must be at least 250 pixels.",
+      call. = FALSE
+    )
+  }
+
+  if (!is.numeric(height) ||
+      length(height) != 1L ||
+      is.na(height) ||
+      !is.finite(height) ||
+      height < 250L) {
+    stop(
+      "`height` must be at least 250 pixels.",
+      call. = FALSE
+    )
+  }
+
+  if (!is.character(project_name) ||
+      length(project_name) != 1L ||
+      is.na(project_name) ||
+      !nzchar(project_name)) {
+    stop(
+      "`project_name` must be one non-empty character value.",
+      call. = FALSE
+    )
+  }
+
+  page <- as.integer(page)
+  n_col <- as.integer(n_col)
+  n_row <- as.integer(n_row)
+  n_plot <- as.integer(n_plot)
+
+  page_size <- n_col * n_row
+
+  # ---------------------------------------------------------------
+  # Identify valid polygon gates
+  # ---------------------------------------------------------------
+  gates_by_sample <- lapply(sample_ids, function(current_sample_id) {
+    self$get_gates(
+      sample_id = current_sample_id,
+      gate_name = gate_name
+    )
+  })
+
+  names(gates_by_sample) <- sample_ids
+
+  valid_gate <- vapply(
+    gates_by_sample,
+    function(current_gate) {
+      !is.null(current_gate) &&
+        identical(current_gate$type, "polygon") &&
+        !is.null(current_gate$channels) &&
+        identical(names(current_gate$channels), c("x", "y")) &&
+        is.data.frame(current_gate$coordinates) &&
+        all(c("x", "y") %in% names(current_gate$coordinates)) &&
+        nrow(current_gate$coordinates) >= 3L
+    },
+    logical(1L)
+  )
+
+  eligible_samples <- sample_ids[valid_gate]
+  skipped_samples <- sample_ids[!valid_gate]
+
+  if (length(eligible_samples) == 0L) {
+    stop(
+      "None of the selected samples has a valid polygon gate named '",
+      gate_name,
+      "'.",
+      call. = FALSE
+    )
+  }
+
+  total_pages <- ceiling(length(eligible_samples) / page_size)
+
+  if (page > total_pages) {
+    stop(
+      "`page` is ", page,
+      ", but only ", total_pages,
+      " page(s) are available.",
+      call. = FALSE
+    )
+  }
+
+  start_index <- (page - 1L) * page_size + 1L
+  end_index <- min(page * page_size, length(eligible_samples))
+
+  page_sample_ids <- eligible_samples[start_index:end_index]
+
+  # Every invocation receives its own browser-side revision store.
+  batch_id <- paste0(
+    "cytoTerra-polygon-editor-",
+    gsub("[^A-Za-z0-9_-]", "-", gate_name),
+    "-",
+    as.integer(stats::runif(1L, 1L, 1000000000L))
+  )
+
+  batch_panel_id <- paste0(batch_id, "-merged-panel")
+  store_key <- paste0("__", batch_id, "_revisions")
+
+  # ---------------------------------------------------------------
+  # R helpers
+  # ---------------------------------------------------------------
+  get_marker_label <- function(gate, axis, fallback) {
+    descriptions <- gate$channel_description
+
+    if (!is.null(descriptions) &&
+        !is.null(descriptions[[axis]]) &&
+        is.character(descriptions[[axis]]) &&
+        length(descriptions[[axis]]) == 1L &&
+        !is.na(descriptions[[axis]]) &&
+        nzchar(descriptions[[axis]])) {
+      return(descriptions[[axis]])
+    }
+
+    fallback
+  }
+
+  make_editor <- function(
+      current_sample_id,
+      current_gate,
+      sample_number
+  ) {
+
+    x_channel <- unname(current_gate$channels[["x"]])
+    y_channel <- unname(current_gate$channels[["y"]])
+
+    flow_frame <- self$get_flow_frame(current_sample_id)
+    expression_matrix <- flowCore::exprs(flow_frame)
+
+    missing_channels <- setdiff(
+      c(x_channel, y_channel),
+      colnames(expression_matrix)
+    )
+
+    if (length(missing_channels) > 0L) {
+      stop(
+        "Sample '", current_sample_id,
+        "' does not contain gate channel(s): ",
+        paste(missing_channels, collapse = ", "),
+        ".",
+        call. = FALSE
+      )
+    }
+
+    plot_transform <- if (identical(transform, "gate")) {
+      if (!is.null(current_gate$transform)) {
+        current_gate$transform
+      } else {
+        "none"
+      }
+    } else {
+      transform
+    }
+
+    if (!plot_transform %in% c("asinh", "log1p", "none")) {
+      stop(
+        "Unsupported transform '", plot_transform,
+        "' for sample '", current_sample_id, "'.",
+        call. = FALSE
+      )
+    }
+
+    plot_cofactor <- if (!is.null(cofactor)) {
+      cofactor
+    } else if (!is.null(current_gate$cofactor) &&
+               is.numeric(current_gate$cofactor) &&
+               length(current_gate$cofactor) == 1L &&
+               is.finite(current_gate$cofactor) &&
+               current_gate$cofactor > 0) {
+      current_gate$cofactor
+    } else {
+      150
+    }
+
+    transform_values <- function(values) {
+      switch(
+        plot_transform,
+        asinh = asinh(values / plot_cofactor),
+        log1p = log1p(values),
+        none = values
+      )
+    }
+
+    gate_mask <- self$evaluate_gate(
+      sample_id = current_sample_id,
+      gate_name = gate_name
+    )
+
+    parent_mask <- if (identical(current_gate$parent, "root")) {
+      rep(TRUE, nrow(expression_matrix))
+    } else {
+      self$evaluate_gate(
+        sample_id = current_sample_id,
+        gate_name = current_gate$parent
+      )
+    }
+
+    parent_index <- which(parent_mask)
+
+    if (length(parent_index) == 0L) {
+      stop(
+        "Sample '", current_sample_id,
+        "' has no events in parent gate '",
+        current_gate$parent,
+        "'.",
+        call. = FALSE
+      )
+    }
+
+    plot_index <- if (length(parent_index) <= n_plot) {
+      parent_index
+    } else {
+      sample(
+        parent_index,
+        size = n_plot,
+        replace = FALSE
+      )
+    }
+
+    x_raw <- expression_matrix[plot_index, x_channel]
+    y_raw <- expression_matrix[plot_index, y_channel]
+    displayed_gate_mask <- gate_mask[plot_index]
+
+    valid_events <- is.finite(x_raw) & is.finite(y_raw)
+
+    if (identical(plot_transform, "log1p")) {
+      valid_events <- valid_events & x_raw >= 0 & y_raw >= 0
+    }
+
+    x_raw <- x_raw[valid_events]
+    y_raw <- y_raw[valid_events]
+    displayed_gate_mask <- displayed_gate_mask[valid_events]
+
+    if (length(x_raw) == 0L) {
+      stop(
+        "No finite parent events are available for sample '",
+        current_sample_id,
+        "'.",
+        call. = FALSE
+      )
+    }
+
+    x <- transform_values(x_raw)
+    y <- transform_values(y_raw)
+
+    polygon_x <- transform_values(current_gate$coordinates$x)
+    polygon_y <- transform_values(current_gate$coordinates$y)
+
+    if (!all(is.finite(polygon_x)) ||
+        !all(is.finite(polygon_y))) {
+      stop(
+        "Saved polygon cannot be displayed for sample '",
+        current_sample_id,
+        "'.",
+        call. = FALSE
+      )
+    }
+
+    saved_polygon_path <- paste0(
+      "M ",
+      paste(
+        sprintf("%.12g,%.12g", polygon_x, polygon_y),
+        collapse = " L "
+      ),
+      " Z"
+    )
+
+    parent_data <- data.frame(
+      x = x[!displayed_gate_mask],
+      y = y[!displayed_gate_mask]
+    )
+
+    gated_data <- data.frame(
+      x = x[displayed_gate_mask],
+      y = y[displayed_gate_mask]
+    )
+
+    events_in_parent <- sum(parent_mask)
+    events_in_gate <- sum(gate_mask)
+
+    coordinate_scale <- if (identical(plot_transform, "none")) {
+      "raw"
+    } else {
+      "transformed"
+    }
+
+    control_id <- paste0(
+      batch_id,
+      "-sample-controls-",
+      sample_number
+    )
+
+    x_label <- get_marker_label(
+      current_gate,
+      "x",
+      x_channel
+    )
+
+    y_label <- get_marker_label(
+      current_gate,
+      "y",
+      y_channel
+    )
+
+    widget <- plotly::plot_ly(
+      type = "scattergl",
+      mode = "markers",
+      width = as.integer(width),
+      height = as.integer(height)
+    )
+
+    if (nrow(parent_data) > 0L) {
+      widget <- plotly::add_markers(
+        widget,
+        data = parent_data,
+        x = ~x,
+        y = ~y,
+        marker = list(
+          color = parent_color,
+          size = point_size,
+          opacity = 0.22
+        ),
+        hoverinfo = "skip",
+        showlegend = FALSE
+      )
+    }
+
+    if (nrow(gated_data) > 0L) {
+      widget <- plotly::add_markers(
+        widget,
+        data = gated_data,
+        x = ~x,
+        y = ~y,
+        marker = list(
+          color = gated_color,
+          size = point_size,
+          opacity = 0.55
+        ),
+        hoverinfo = "skip",
+        showlegend = FALSE
+      )
+    }
+
+    widget <- plotly::layout(
+      widget,
+      title = paste0(
+        current_sample_id,
+        "<br><sup>",
+        events_in_gate,
+        " / ",
+        events_in_parent,
+        " (",
+        formatC(
+          100 * events_in_gate / events_in_parent,
+          format = "f",
+          digits = 1
+        ),
+        "%)</sup>"
+      ),
+      xaxis = list(
+        title = paste0(
+          x_label,
+          "<br><sup>", x_channel, "</sup>"
+        ),
+        zeroline = FALSE
+      ),
+      yaxis = list(
+        title = paste0(
+          y_label,
+          "<br><sup>", y_channel, "</sup>"
+        ),
+        zeroline = FALSE
+      ),
+      shapes = list(
+        list(
+          type = "path",
+          path = saved_polygon_path,
+          xref = "x",
+          yref = "y",
+          line = list(
+            color = gate_color,
+            width = 2
+          ),
+          fillcolor = "rgba(0,0,0,0)",
+          layer = "above"
+        )
+      ),
+      dragmode = "drawclosedpath",
+      showlegend = FALSE,
+      margin = list(
+        l = 75,
+        r = 20,
+        b = 65,
+        t = 65
+      )
+    )
+
+    widget <- plotly::config(
+      widget,
+      displaylogo = FALSE,
+      editable = FALSE,
+      modeBarButtonsToAdd = c(
+        "drawclosedpath",
+        "eraseshape"
+      )
+    )
+
+    widget <- htmlwidgets::onRender(
+      widget,
+      jsCode = "
+      function(el, x, data) {
+
+        function initialise(attempt) {
+
+          var control = document.getElementById(data.control_id);
+          var panel = document.getElementById(data.batch_panel_id);
+
+          if (!control || !panel) {
+            if (attempt < 60) {
+              window.setTimeout(function() {
+                initialise(attempt + 1);
+              }, 50);
+            }
+            return;
+          }
+
+          var useButton = control.querySelector(
+            '.cytoTerra-use-polygon'
+          );
+
+          var copyButton = control.querySelector(
+            '.cytoTerra-copy-gate'
+          );
+
+          var pasteButton = control.querySelector(
+            '.cytoTerra-paste-gate'
+          );
+
+          var status = control.querySelector(
+            '.cytoTerra-sample-status'
+          );
+
+          var generateButton = panel.querySelector(
+            '.cytoTerra-generate-batch-code'
+          );
+
+          var copyCodeButton = panel.querySelector(
+            '.cytoTerra-copy-batch-code'
+          );
+
+          var codeArea = panel.querySelector('textarea');
+
+          var batchStatus = panel.querySelector(
+            '.cytoTerra-batch-status'
+          );
+
+          if (!useButton ||
+              !copyButton ||
+              !pasteButton ||
+              !status ||
+              !generateButton ||
+              !copyCodeButton ||
+              !codeArea) {
+            console.error(
+              'cytoTerra polygon editor controls could not be initialized.'
+            );
+            return;
+          }
+
+          if (!window[data.store_key]) {
+            window[data.store_key] = {};
+          }
+
+          if (!Object.prototype.hasOwnProperty.call(
+            window,
+            'cytoTerraPolygonClipboard'
+          )) {
+            window.cytoTerraPolygonClipboard = null;
+          }
+
+          var newestDrawnPath = null;
+          var pastedDisplayPoints = null;
+
+          function pointsFromPath(path) {
+            if (!path || typeof path !== 'string') {
+              return null;
+            }
+
+            var matches = path.match(
+              /[-+]?(?:\\d*\\.?\\d+)(?:[eE][-+]?\\d+)?/g
+            );
+
+            if (!matches ||
+                matches.length < 6 ||
+                matches.length % 2 !== 0) {
+              return null;
+            }
+
+            var points = [];
+
+            for (var i = 0; i < matches.length; i += 2) {
+              var xValue = Number(matches[i]);
+              var yValue = Number(matches[i + 1]);
+
+              if (!Number.isFinite(xValue) ||
+                  !Number.isFinite(yValue)) {
+                return null;
+              }
+
+              points.push([xValue, yValue]);
+            }
+
+            // Remove repeated closing point, if Plotly includes one.
+            if (points.length >= 4) {
+              var first = points[0];
+              var last = points[points.length - 1];
+
+              if (first[0] === last[0] &&
+                  first[1] === last[1]) {
+                points.pop();
+              }
+            }
+
+            return points.length >= 3 ? points : null;
+          }
+
+          function pathFromPoints(points) {
+            if (!points || points.length < 3) {
+              return null;
+            }
+
+            function numberString(value) {
+              return Number(value).toPrecision(12);
+            }
+
+            var path =
+              'M ' +
+              numberString(points[0][0]) +
+              ',' +
+              numberString(points[0][1]);
+
+            for (var i = 1; i < points.length; i++) {
+              path +=
+                ' L ' +
+                numberString(points[i][0]) +
+                ',' +
+                numberString(points[i][1]);
+            }
+
+            return path + ' Z';
+          }
+
+          function layoutShapes() {
+            if (el.layout &&
+                Array.isArray(el.layout.shapes) &&
+                el.layout.shapes.length > 0) {
+              return el.layout.shapes;
+            }
+
+            if (el._fullLayout &&
+                Array.isArray(el._fullLayout.shapes) &&
+                el._fullLayout.shapes.length > 0) {
+              return el._fullLayout.shapes;
+            }
+
+            return [];
+          }
+
+          function savedPolygon() {
+            var shapes = layoutShapes();
+
+            if (!shapes[0] ||
+                typeof shapes[0].path !== 'string') {
+              return null;
+            }
+
+            return pointsFromPath(shapes[0].path);
+          }
+
+          function drawnPolygon() {
+            var points = pointsFromPath(newestDrawnPath);
+
+            if (points) {
+              return points;
+            }
+
+            var shapes = layoutShapes();
+
+            // Shape 0 is the original saved gate.
+            // User-drawn polygons generally begin at shape 1.
+            for (var i = shapes.length - 1; i >= 1; i--) {
+              if (!shapes[i] ||
+                  typeof shapes[i].path !== 'string') {
+                continue;
+              }
+
+              points = pointsFromPath(shapes[i].path);
+
+              if (points) {
+                return points;
+              }
+            }
+
+            return null;
+          }
+
+          function currentPolygon() {
+            var points = drawnPolygon();
+
+            if (points) {
+              return points;
+            }
+
+            if (pastedDisplayPoints &&
+                pastedDisplayPoints.length >= 3) {
+              return pastedDisplayPoints;
+            }
+
+            return savedPolygon();
+          }
+
+          function toRaw(value) {
+            if (data.transform === 'asinh') {
+              return Math.sinh(value) * Number(data.cofactor);
+            }
+
+            if (data.transform === 'log1p') {
+              return Math.expm1(value);
+            }
+
+            return value;
+          }
+
+          function fromRaw(value) {
+            if (data.transform === 'asinh') {
+              return Math.asinh(value / Number(data.cofactor));
+            }
+
+            if (data.transform === 'log1p') {
+              if (value < 0) {
+                return null;
+              }
+
+              return Math.log1p(value);
+            }
+
+            return value;
+          }
+
+          function displayToRaw(displayPoints) {
+            var rawPoints = [];
+
+            for (var i = 0; i < displayPoints.length; i++) {
+              var rawX = toRaw(displayPoints[i][0]);
+              var rawY = toRaw(displayPoints[i][1]);
+
+              if (!Number.isFinite(rawX) ||
+                  !Number.isFinite(rawY)) {
+                return null;
+              }
+
+              rawPoints.push([rawX, rawY]);
+            }
+
+            return rawPoints;
+          }
+
+          function rawToDisplay(rawPoints) {
+            var displayPoints = [];
+
+            for (var i = 0; i < rawPoints.length; i++) {
+              var displayX = fromRaw(rawPoints[i][0]);
+              var displayY = fromRaw(rawPoints[i][1]);
+
+              if (!Number.isFinite(displayX) ||
+                  !Number.isFinite(displayY)) {
+                return null;
+              }
+
+              displayPoints.push([displayX, displayY]);
+            }
+
+            return displayPoints;
+          }
+
+          function saveRevision(displayPoints) {
+            window[data.store_key][data.sample_id] = {
+              sample_id: data.sample_id,
+              gate_name: data.gate_name,
+              points: displayPoints,
+              coordinate_scale: data.coordinate_scale,
+              transform: data.transform,
+              cofactor: data.cofactor
+            };
+          }
+
+          // This writes R code directly. It does not depend on a second
+          // click-handler successfully firing.
+          function refreshMergedCode() {
+            var revisions = window[data.store_key] || {};
+            var commands = [];
+
+            function numberString(value) {
+              return Number(value).toPrecision(12);
+            }
+
+            function makeCommand(revision) {
+              var xValues = revision.points.map(function(point) {
+                return numberString(point[0]);
+              }).join(', ');
+
+              var yValues = revision.points.map(function(point) {
+                return numberString(point[1]);
+              }).join(', ');
+
+              return (
+                data.project_name + '$replace_polygon_gate(\\n' +
+                '  sample_id = ' +
+                JSON.stringify(revision.sample_id) + ',\\n' +
+                '  gate_name = ' +
+                JSON.stringify(revision.gate_name) + ',\\n' +
+                '  coordinates = data.frame(\\n' +
+                '    x = c(' + xValues + '),\\n' +
+                '    y = c(' + yValues + ')\\n' +
+                '  ),\\n' +
+                '  coordinate_scale = ' +
+                JSON.stringify(revision.coordinate_scale) + ',\\n' +
+                '  transform = ' +
+                JSON.stringify(revision.transform) + ',\\n' +
+                '  cofactor = ' +
+                numberString(revision.cofactor) + ',\\n' +
+                '  note = ' +
+                JSON.stringify(
+                  'Manual polygon revision from batch interactive review.'
+                ) + '\\n' +
+                ')'
+              );
+            }
+
+            data.sample_order.forEach(function(sampleId) {
+              if (revisions[sampleId]) {
+                commands.push(makeCommand(revisions[sampleId]));
+              }
+            });
+
+            if (commands.length === 0) {
+              codeArea.value =
+                '# No polygon revisions have been saved yet.\\n' +
+                '# Draw and close a polygon, then click Use drawn polygon.';
+
+              if (batchStatus) {
+                batchStatus.textContent =
+                  'No polygon revisions have been saved yet.';
+              }
+
+              return;
+            }
+
+            codeArea.value = commands.join('\\n\\n');
+
+            if (batchStatus) {
+              batchStatus.textContent =
+                commands.length +
+                ' sample revision(s) included in the R code.';
+            }
+          }
+
+          function pathFromRelayout(eventData) {
+            if (!eventData) {
+              return null;
+            }
+
+            var keys = Object.keys(eventData);
+
+            for (var i = 0; i < keys.length; i++) {
+              var key = keys[i];
+              var value = eventData[key];
+
+              if (/^shapes\\[\\d+\\]\\.path$/.test(key) &&
+                  typeof value === 'string' &&
+                  value.length > 0) {
+                return value;
+              }
+
+              if (/^shapes\\[\\d+\\]$/.test(key) &&
+                  value &&
+                  typeof value.path === 'string' &&
+                  value.path.length > 0) {
+                return value.path;
+              }
+            }
+
+            if (Array.isArray(eventData.shapes)) {
+              for (var j = eventData.shapes.length - 1; j >= 0; j--) {
+                if (eventData.shapes[j] &&
+                    typeof eventData.shapes[j].path === 'string' &&
+                    eventData.shapes[j].path.length > 0) {
+                  return eventData.shapes[j].path;
+                }
+              }
+            }
+
+            return null;
+          }
+
+          el.on('plotly_relayout', function(eventData) {
+            var path = pathFromRelayout(eventData);
+
+            if (path) {
+              newestDrawnPath = path;
+              pastedDisplayPoints = null;
+
+              status.textContent =
+                'Polygon detected. Click Use drawn polygon.';
+            }
+          });
+
+          useButton.addEventListener('click', function() {
+            // Permit either a newly drawn polygon or, if applicable,
+            // the currently displayed pasted polygon.
+            var points = currentPolygon();
+
+            if (!points || points.length < 3) {
+              status.textContent =
+                'No readable polygon was found. Draw and close a polygon first.';
+              return;
+            }
+
+            saveRevision(points);
+            refreshMergedCode();
+
+            status.textContent =
+              points.length +
+              ' vertices saved. R code was generated below.';
+          });
+
+          copyButton.addEventListener('click', function() {
+            var displayPoints = currentPolygon();
+
+            if (!displayPoints || displayPoints.length < 3) {
+              status.textContent =
+                'No valid polygon is available to copy.';
+              return;
+            }
+
+            var rawPoints = displayToRaw(displayPoints);
+
+            if (!rawPoints) {
+              status.textContent =
+                'Copy failed: polygon could not be converted to raw FCS units.';
+              return;
+            }
+
+            window.cytoTerraPolygonClipboard = {
+              source_sample_id: data.sample_id,
+              gate_name: data.gate_name,
+              x_channel: data.x_channel,
+              y_channel: data.y_channel,
+              raw_points: rawPoints
+            };
+
+            status.textContent =
+              'Copied polygon from ' + data.sample_id + '.';
+          });
+
+          pasteButton.addEventListener('click', function() {
+            var clipboard = window.cytoTerraPolygonClipboard;
+
+            if (!clipboard) {
+              status.textContent =
+                'Nothing to paste. Copy a gate from another sample first.';
+              return;
+            }
+
+            if (clipboard.gate_name !== data.gate_name ||
+                clipboard.x_channel !== data.x_channel ||
+                clipboard.y_channel !== data.y_channel) {
+              status.textContent =
+                'Paste refused: gate name or FCS channels differ.';
+              return;
+            }
+
+            var displayPoints = rawToDisplay(clipboard.raw_points);
+
+            if (!displayPoints || displayPoints.length < 3) {
+              status.textContent =
+                'Paste failed: copied polygon cannot be displayed here.';
+              return;
+            }
+
+            var path = pathFromPoints(displayPoints);
+
+            if (!path) {
+              status.textContent =
+                'Paste failed: invalid polygon.';
+              return;
+            }
+
+            pastedDisplayPoints = displayPoints;
+            newestDrawnPath = null;
+
+            // Replace the saved displayed polygon with the copied polygon.
+            Plotly.relayout(el, {
+              shapes: [
+                {
+                  type: 'path',
+                  path: path,
+                  xref: 'x',
+                  yref: 'y',
+                  line: {
+                    color: data.gate_color,
+                    width: 2
+                  },
+                  fillcolor: 'rgba(0,0,0,0)',
+                  layer: 'above'
+                }
+              ]
+            });
+
+            saveRevision(displayPoints);
+            refreshMergedCode();
+
+            status.textContent =
+              'Pasted gate from ' +
+              clipboard.source_sample_id +
+              '. R code was generated below.';
+          });
+
+          // Bind batch-level controls only once.
+          if (!panel.dataset.cytoTerraBound) {
+            panel.dataset.cytoTerraBound = 'true';
+
+            generateButton.addEventListener('click', function() {
+              refreshMergedCode();
+            });
+
+            copyCodeButton.addEventListener('click', function() {
+              codeArea.focus();
+              codeArea.select();
+              codeArea.setSelectionRange(0, 999999);
+
+              if (navigator.clipboard &&
+                  navigator.clipboard.writeText) {
+                navigator.clipboard.writeText(codeArea.value).then(
+                  function() {
+                    if (batchStatus) {
+                      batchStatus.textContent =
+                        'Merged R code copied to clipboard.';
+                    }
+                  },
+                  function() {
+                    document.execCommand('copy');
+
+                    if (batchStatus) {
+                      batchStatus.textContent =
+                        'Merged R code selected; copy with Ctrl+C or Cmd+C.';
+                    }
+                  }
+                );
+              } else {
+                document.execCommand('copy');
+
+                if (batchStatus) {
+                  batchStatus.textContent =
+                    'Merged R code selected; copy with Ctrl+C or Cmd+C.';
+                }
+              }
+            });
+          }
+
+          status.textContent =
+            'Draw and close a polygon, then click Use drawn polygon.';
+        }
+
+        initialise(0);
+      }
+      ",
+      data = list(
+        control_id = control_id,
+        batch_panel_id = batch_panel_id,
+        store_key = store_key,
+        sample_id = current_sample_id,
+        gate_name = gate_name,
+        x_channel = x_channel,
+        y_channel = y_channel,
+        coordinate_scale = coordinate_scale,
+        transform = plot_transform,
+        cofactor = plot_cofactor,
+        gate_color = gate_color,
+        project_name = project_name,
+        sample_order = page_sample_ids
+      )
+    )
+
+    htmltools::tags$div(
+      style = paste0(
+        "width: ", as.integer(width) + 18L, "px;",
+        "box-sizing: border-box;",
+        "border: 1px solid #D7DDE3;",
+        "border-radius: 5px;",
+        "padding: 8px;",
+        "background: #FFFFFF;"
+      ),
+
+      widget,
+
+      htmltools::tags$div(
+        id = control_id,
+        style = paste(
+          "margin-top: 7px;",
+          "font-family: sans-serif;",
+          "min-height: 28px;"
+        ),
+
+        htmltools::tags$button(
+          "Use drawn polygon",
+          type = "button",
+          class = "cytoTerra-use-polygon",
+          style = "margin-right: 7px;"
+        ),
+
+        htmltools::tags$button(
+          "Copy gate",
+          type = "button",
+          class = "cytoTerra-copy-gate",
+          style = "margin-right: 7px;"
+        ),
+
+        htmltools::tags$button(
+          "Paste gate",
+          type = "button",
+          class = "cytoTerra-paste-gate",
+          style = "margin-right: 7px;"
+        ),
+
+        htmltools::tags$span(
+          class = "cytoTerra-sample-status",
+          style = "font-size: 0.82em;"
+        )
+      )
+    )
+  }
+
+  # ---------------------------------------------------------------
+  # Build sample widgets
+  # ---------------------------------------------------------------
+  editor_widgets <- lapply(
+    seq_along(page_sample_ids),
+    function(index) {
+      current_sample_id <- page_sample_ids[[index]]
+
+      make_editor(
+        current_sample_id = current_sample_id,
+        current_gate = gates_by_sample[[current_sample_id]],
+        sample_number = index
+      )
+    }
+  )
+
+  skipped_text <- if (length(skipped_samples) > 0L) {
+    paste0(
+      " Skipped ",
+      length(skipped_samples),
+      " sample(s) without a valid polygon gate: ",
+      paste(skipped_samples, collapse = ", "),
+      "."
+    )
+  } else {
+    ""
+  }
+
+  # ---------------------------------------------------------------
+  # Build HTML output
+  # ---------------------------------------------------------------
+  header <- htmltools::tags$div(
+    style = paste(
+      "margin-bottom: 12px;",
+      "padding: 10px 12px;",
+      "border: 1px solid #B8C5D1;",
+      "border-radius: 5px;",
+      "background: #F7FAFC;",
+      "font-family: sans-serif;"
+    ),
+
+    htmltools::tags$div(
+      paste0("Batch polygon gate review: ", gate_name),
+      style = "font-size: 1.1em; font-weight: 600;"
+    ),
+
+    htmltools::tags$div(
+      paste0(
+        "Showing samples ",
+        start_index,
+        "–",
+        end_index,
+        " of ",
+        length(eligible_samples),
+        "; page ",
+        page,
+        " of ",
+        total_pages,
+        ".",
+        skipped_text
+      ),
+      style = "margin-top: 4px; font-size: 0.9em;"
+    ),
+
+    htmltools::tags$div(
+      paste0(
+        "Workflow: draw and close a polygon, click ",
+        "'Use drawn polygon', then scroll to the merged-code panel. ",
+        "The R code is written automatically."
+      ),
+      style = "margin-top: 5px; font-size: 0.9em; color: #1D4E89;"
+    )
+  )
+
+  grid_scroll_container <- htmltools::tags$div(
+    style = paste0(
+      "width: 100%;",
+      "overflow-x: auto;",
+      "overflow-y: visible;",
+      "padding-bottom: 12px;",
+      "border: 1px solid #E0E5EA;",
+      "border-radius: 5px;",
+      "background: #FDFDFD;"
+    ),
+
+    htmltools::tags$div(
+      style = paste0(
+        "display: grid;",
+        "grid-template-columns: repeat(",
+        n_col,
+        ", ",
+        as.integer(width) + 18L,
+        "px);",
+        "gap: 12px;",
+        "align-items: start;",
+        "width: max-content;",
+        "padding: 10px;"
+      ),
+      editor_widgets
+    )
+  )
+
+  merged_panel <- htmltools::tags$div(
+    id = batch_panel_id,
+    style = paste(
+      "margin-top: 16px;",
+      "padding: 12px;",
+      "border: 1px solid #B8C5D1;",
+      "border-radius: 5px;",
+      "background: #F7FAFC;",
+      "font-family: sans-serif;"
+    ),
+
+    htmltools::tags$div(
+      "Merged R code for revised samples",
+      style = "font-weight: 600; margin-bottom: 6px;"
+    ),
+
+    htmltools::tags$div(
+      paste(
+        "The code is updated automatically after a polygon is used or pasted.",
+        "Click Copy merged R code, paste it into a new R cell, and run it."
+      ),
+      style = "font-size: 0.9em; margin-bottom: 8px;"
+    ),
+
+    htmltools::tags$button(
+      "Generate merged R code",
+      type = "button",
+      class = "cytoTerra-generate-batch-code",
+      style = "margin-right: 8px;"
+    ),
+
+    htmltools::tags$button(
+      "Copy merged R code",
+      type = "button",
+      class = "cytoTerra-copy-batch-code"
+    ),
+
+    htmltools::tags$span(
+      class = "cytoTerra-batch-status",
+      " No polygon revisions have been saved yet.",
+      style = "margin-left: 8px; font-size: 0.9em;"
+    ),
+
+    htmltools::tags$textarea(
+      readonly = "readonly",
+      rows = 20,
+      style = paste(
+        "width: 100%;",
+        "margin-top: 10px;",
+        "font-family: monospace;",
+        "font-size: 0.85em;",
+        "box-sizing: border-box;"
+      ),
+      "# Draw and close a polygon.\n",
+      "# Click Use drawn polygon.\n",
+      "# The replacement-gate R code will appear here."
+    )
+  )
+
+  htmltools::browsable(
+    htmltools::tagList(
+      header,
+      grid_scroll_container,
+      merged_panel
+    )
+  )
+}
+)

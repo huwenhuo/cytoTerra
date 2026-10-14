@@ -1,0 +1,41 @@
+Package: cytoTerra
+Title: Scalable Cytometry Gating Tools for Yale HPC Workflows
+Version: 0.0.0.9000
+Authors@R: person("Wenhuo", "Hu", email = "wenhuo.hu@yale.edu", role = c("aut", "cre"))
+Description: Tools for reproducible, scalable flow-cytometry analysis of large FCS data sets on high-performance computing systems. Provides FCS import and validation, channel inspection, automatic gate generation, storage of reproducible gate definitions, and support for interactive gating workflows in JupyterLab notebooks using the IRkernel.
+License: MIT + file LICENSE
+Encoding: UTF-8
+Roxygen: list(markdown = TRUE)
+RoxygenNote: 7.3.3
+Imports: 
+    R6,
+    FlowSOM,
+    FastPG,
+    uwot,
+    data.table,
+    flowCore,
+    htmltools,
+    htmlwidgets,
+    flowWorkspace,
+    ggcyto,
+    dplyr,
+    rlang,
+    methods,
+    plotly,
+    Spectre,
+    mclust
+Collate:
+    '02_utils_gates.R'
+    '01_methods_samples.R'
+    '03_methods_gates.R'
+    '04_utils_auto_gating.R'
+    '05_methods_auto_gating.R'
+    '06_methods_manual_gating.R'
+    '07_methods_dataset.R'
+    '08_methods_plot.R'
+    '09_methods_clustering.R'
+    '11_utils_gating_workspace.R'
+    '10_methods_gating_workspace.R'
+    '90_CytoTerraProject.R'
+    '91_new_cyto_project.R'
+    '00_cytoTerra.R'
