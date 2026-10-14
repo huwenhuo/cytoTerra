@@ -123,8 +123,8 @@ project$get_channel_info(sample_id = 'A1')
 ```
 
 ```r
-# marker names can be these typed on the machine
-# alternatively, the channel name also works
+# marker names can be these typed on the machine such as CD3
+# alternatively, the channel name also works such as BUV395-A
 # cytoTerra will automatically match the marker name or channel name
 
 cluster_markers <- c(
