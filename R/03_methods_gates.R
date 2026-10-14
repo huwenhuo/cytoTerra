@@ -1097,13 +1097,12 @@ get_gate_tree = function(
 },
 
 
-export_gate_tree <- function(
-    project,
+export_gate_tree = function(
     sample_id,
     file
 ) {
 
-  tree <- project$get_gate_tree(
+  tree <- self$get_gate_tree(
     sample_id = sample_id,
     include_root = FALSE
   )
@@ -1112,7 +1111,7 @@ export_gate_tree <- function(
     lapply(
       tree$gate_name,
       function(gate_name) {
-        project$get_gates(
+        self$get_gates(
           sample_id = sample_id,
           gate_name = gate_name
         )
@@ -1139,34 +1138,35 @@ export_gate_tree <- function(
   invisible(file)
 },
 
-export_all_gate_trees <- function(
-    project,
+export_all_gate_trees = function(
     file
 ) {
 
-  sample_ids <- project$get_sample_ids()
+  sample_ids <- self$get_sample_ids()
 
   samples <- stats::setNames(
     lapply(
       sample_ids,
       function(sample_id) {
 
-        tree <- project$get_gate_tree(
+        tree <- self$get_gate_tree(
           sample_id = sample_id,
           include_root = FALSE
         )
 
+        gate_names <- as.character(tree$gate_name)
+
         gates <- stats::setNames(
           lapply(
-            tree$gate_name,
+            gate_names,
             function(gate_name) {
-              project$get_gates(
+              self$get_gates(
                 sample_id = sample_id,
                 gate_name = gate_name
               )
             }
           ),
-          tree$gate_name
+          gate_names
         )
 
         list(
@@ -1189,7 +1189,10 @@ export_all_gate_trees <- function(
     samples = samples
   )
 
-  saveRDS(gate_export, file = file)
+  saveRDS(
+    gate_export,
+    file = file
+  )
 
   invisible(file)
 },
@@ -1197,7 +1200,8 @@ export_all_gate_trees <- function(
 import_gate_tree = function(
     file,
     to_samples = NULL,
-    overwrite = FALSE
+    overwrite = FALSE,
+    skip_existing = FALSE
 ) {
 
   if (!is.character(file) ||
@@ -1227,15 +1231,23 @@ import_gate_tree = function(
     )
   }
 
-  # Deliberately conservative for the first implementation.
-  # Deleting/replacing a gate can also affect its descendants, so that
-  # behavior should be added separately and explicitly.
+  if (!is.logical(skip_existing) ||
+      length(skip_existing) != 1L ||
+      is.na(skip_existing)) {
+    stop(
+      "`skip_existing` must be TRUE or FALSE.",
+      call. = FALSE
+    )
+  }
+
+  # Replacing gates is deliberately not implemented. Removing a gate
+  # may also require removing or rebuilding its descendants.
   if (isTRUE(overwrite)) {
     stop(
       paste(
         "`overwrite = TRUE` is not yet supported for gate-tree import.",
-        "Use `overwrite = FALSE`, rename/delete conflicting target gates,",
-        "then import again."
+        "Use `overwrite = FALSE`, remove/rename conflicting target gates,",
+        "or use `skip_existing = TRUE` to retain them."
       ),
       call. = FALSE
     )
@@ -1258,6 +1270,13 @@ import_gate_tree = function(
 
   tree <- gate_export$tree
   gates <- gate_export$gates
+
+  if (!is.data.frame(tree)) {
+    stop(
+      "The exported gate tree must be a data frame.",
+      call. = FALSE
+    )
+  }
 
   required_tree_columns <- c(
     "gate_name",
@@ -1288,6 +1307,13 @@ import_gate_tree = function(
 
   gate_names <- as.character(tree$gate_name)
 
+  if (anyNA(gate_names) || any(!nzchar(gate_names))) {
+    stop(
+      "The exported gate tree contains missing or empty gate names.",
+      call. = FALSE
+    )
+  }
+
   if (anyDuplicated(gate_names)) {
     stop(
       "The exported gate tree contains duplicate gate names.",
@@ -1296,7 +1322,10 @@ import_gate_tree = function(
   }
 
   if (!all(gate_names %in% names(gates))) {
-    missing_gates <- setdiff(gate_names, names(gates))
+    missing_gates <- setdiff(
+      gate_names,
+      names(gates)
+    )
 
     stop(
       "The exported template is missing definition(s) for: ",
@@ -1306,8 +1335,8 @@ import_gate_tree = function(
     )
   }
 
-  # Preserve parent-before-child ordering even if the input data frame
-  # was reordered externally.
+  # Keep the import order parent-before-child even if the saved data
+  # frame was subsequently reordered.
   tree <- tree[order(tree$depth), , drop = FALSE]
   gate_names <- as.character(tree$gate_name)
 
@@ -1315,8 +1344,8 @@ import_gate_tree = function(
 
     to_samples <- self$get_sample_ids()
 
-    # A template normally originated from one current-project sample.
-    # Do not import it back onto itself by default.
+    # Exclude the source sample by default, when it belongs to the
+    # present project.
     if (!is.null(gate_export$source_sample) &&
         gate_export$source_sample %in% to_samples) {
       to_samples <- setdiff(
@@ -1339,9 +1368,11 @@ import_gate_tree = function(
   }
 
   # ------------------------------------------------------------------
-  # Preflight validation:
-  # validate every target first, so an invalid target does not result
-  # in a partially imported set of gates.
+  # Preflight validation
+  #
+  # Validate every target before modifying any target. This avoids
+  # beginning an import and then discovering an incompatible channel in
+  # a later target sample.
   # ------------------------------------------------------------------
 
   for (target_sample in to_samples) {
@@ -1375,12 +1406,25 @@ import_gate_tree = function(
         )
       }
 
-      # Existing same-name gates are blocked before import begins.
-      if (!is.null(self$get_gates(target_sample, gate_name))) {
+      gate_already_exists <- !is.null(
+        self$get_gates(
+          sample_id = target_sample,
+          gate_name = gate_name
+        )
+      )
+
+      # Existing target gates—such as individually calculated Singlets—
+      # are intentionally retained when skip_existing is TRUE.
+      if (gate_already_exists && isTRUE(skip_existing)) {
+        next
+      }
+
+      if (gate_already_exists) {
         stop(
           "Target sample '", target_sample,
           "' already contains a gate named '", gate_name,
-          "'. Import was cancelled; no gates were added.",
+          "'. Import was cancelled; no gates were added. ",
+          "Use `skip_existing = TRUE` to retain the target gate.",
           call. = FALSE
         )
       }
@@ -1417,6 +1461,7 @@ import_gate_tree = function(
         if (is.null(range_channel) ||
             !is.character(range_channel) ||
             length(range_channel) != 1L ||
+            is.na(range_channel) ||
             !nzchar(range_channel)) {
           stop(
             "Range gate '", gate_name,
@@ -1448,15 +1493,32 @@ import_gate_tree = function(
   }
 
   # ------------------------------------------------------------------
-  # Import gates. Since tree order is parent before child, each parent
-  # exists before its child is added.
+  # Import gates
+  #
+  # The sorted tree ensures a new parent is added before its children.
+  # Existing gates are retained when skip_existing = TRUE.
   # ------------------------------------------------------------------
+
+  imported_count <- 0L
+  skipped_count <- 0L
 
   for (target_sample in to_samples) {
 
     for (gate_name in gate_names) {
 
       gate <- gates[[gate_name]]
+
+      gate_already_exists <- !is.null(
+        self$get_gates(
+          sample_id = target_sample,
+          gate_name = gate_name
+        )
+      )
+
+      if (gate_already_exists && isTRUE(skip_existing)) {
+        skipped_count <- skipped_count + 1L
+        next
+      }
 
       coordinate_scale <- if (!is.null(gate$coordinate_scale)) {
         gate$coordinate_scale
@@ -1527,6 +1589,8 @@ import_gate_tree = function(
 
         if (is.null(gate$lower) ||
             is.null(gate$upper) ||
+            length(gate$lower) != 1L ||
+            length(gate$upper) != 1L ||
             !is.finite(gate$lower) ||
             !is.finite(gate$upper) ||
             gate$lower >= gate$upper) {
@@ -1550,22 +1614,99 @@ import_gate_tree = function(
           note = import_note
         )
       }
+
+      imported_count <- imported_count + 1L
     }
   }
 
   message(
     "Imported ",
-    length(gate_names),
+    imported_count,
     " gate(s) into ",
     length(to_samples),
-    " sample(s)."
+    " sample(s)",
+    if (skipped_count > 0L) {
+      paste0(
+        "; retained ",
+        skipped_count,
+        " existing same-name gate(s)."
+      )
+    } else {
+      "."
+    }
   )
 
   invisible(self)
 },
     
-print_gate_tree = function(project, sample_id) {
-  tree <- project$get_gate_tree(sample_id)
+copy_gate_tree = function(
+    from_sample,
+    to_samples = NULL,
+    overwrite = FALSE,
+    skip_existing = FALSE
+) {
+
+  cytoTerra_validate_sample_ids(
+    self,
+    from_sample
+  )
+
+  if (is.null(to_samples)) {
+    to_samples <- setdiff(
+      self$get_sample_ids(),
+      from_sample
+    )
+  }
+
+  cytoTerra_validate_sample_ids(
+    self,
+    to_samples
+  )
+
+  to_samples <- setdiff(
+    to_samples,
+    from_sample
+  )
+
+  if (length(to_samples) == 0L) {
+    stop(
+      "No target samples were supplied after excluding `from_sample`.",
+      call. = FALSE
+    )
+  }
+
+  template_file <- tempfile(
+    pattern = "cytoTerra_gate_tree_",
+    fileext = ".rds"
+  )
+
+  on.exit(
+    unlink(template_file),
+    add = TRUE
+  )
+
+  self$export_gate_tree(
+    sample_id = from_sample,
+    file = template_file
+  )
+
+  self$import_gate_tree(
+    file = template_file,
+    to_samples = to_samples,
+    overwrite = overwrite,
+    skip_existing = skip_existing
+  )
+
+  message(
+    "Copied the gate tree from '", from_sample,
+    "' to ", length(to_samples), " sample(s)."
+  )
+
+  invisible(self)
+},
+
+print_gate_tree = function(sample_id) {
+  tree <- self$get_gate_tree(sample_id)
 
   cat(
     paste0(

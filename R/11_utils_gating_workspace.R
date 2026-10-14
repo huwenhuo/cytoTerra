@@ -6,7 +6,7 @@
 # Return named selectInput choices:
 # display text = marker description [raw FCS channel name]
 # selected value = raw FCS channel name
-cytoTerra_workspace_channel_choices <- function(
+cytoTerra_workspace_channel_choices = function(
     flow_frame,
     available_channels = colnames(flowCore::exprs(flow_frame))
 ) {
@@ -90,7 +90,7 @@ cytoTerra_workspace_channel_choices <- function(
 }
 
 
-cytoTerra_workspace_transform_values <- function(
+cytoTerra_workspace_transform_values = function(
     values,
     transform,
     cofactor
@@ -104,7 +104,7 @@ cytoTerra_workspace_transform_values <- function(
 }
 
 
-cytoTerra_workspace_transform_label <- function(
+cytoTerra_workspace_transform_label = function(
     transform,
     cofactor
 ) {
@@ -122,7 +122,7 @@ cytoTerra_workspace_transform_label <- function(
 
 
 # Extract the newest Plotly-drawn SVG path from a relayout payload.
-cytoTerra_workspace_get_path_from_relayout <- function(relayout) {
+cytoTerra_workspace_get_path_from_relayout = function(relayout) {
 
   if (is.null(relayout) || length(relayout) == 0L) {
     return(NULL)
@@ -189,7 +189,7 @@ cytoTerra_workspace_get_path_from_relayout <- function(relayout) {
 
 # Parse a Plotly SVG polygon path, for example:
 # M 1,2 L 3,4 L 5,6 Z
-cytoTerra_workspace_polygon_from_path <- function(path) {
+cytoTerra_workspace_polygon_from_path = function(path) {
 
   if (is.null(path) ||
       !is.character(path) ||
@@ -251,7 +251,7 @@ cytoTerra_workspace_polygon_from_path <- function(path) {
 }
 
 
-cytoTerra_workspace_gate_tree_text <- function(tree) {
+cytoTerra_workspace_gate_tree_text = function(tree) {
 
   if (is.null(tree) || nrow(tree) == 0L) {
     return("No gates are defined.")
@@ -273,7 +273,7 @@ cytoTerra_workspace_gate_tree_text <- function(tree) {
 
 # Convert raw polygon-gate coordinates into a Plotly SVG shape on the
 # currently selected display scale.
-cytoTerra_workspace_polygon_to_plotly_shape <- function(
+cytoTerra_workspace_polygon_to_plotly_shape = function(
     gate,
     x_channel,
     y_channel,
@@ -347,7 +347,7 @@ cytoTerra_workspace_polygon_to_plotly_shape <- function(
 }
 
 
-cytoTerra_workspace_ui <- function(
+cytoTerra_workspace_ui = function(
     sample_id,
     channel_choices,
     transform,
@@ -567,7 +567,7 @@ cytoTerra_workspace_ui <- function(
 }
 
 
-cytoTerra_workspace_server <- function(
+cytoTerra_workspace_server = function(
     project,
     sample_id,
     expression_matrix,
@@ -1308,7 +1308,7 @@ cytoTerra_workspace_server <- function(
   }
 }
 
-cytoTerra_workspace_capture_relayout <- function(plot) {
+cytoTerra_workspace_capture_relayout = function(plot) {
 
   htmlwidgets::onRender(
     plot,

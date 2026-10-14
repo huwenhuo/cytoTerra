@@ -89,7 +89,7 @@ cytoTerra_methods_plot <- list(
       stop("cofactor must be one positive numeric value.", call. = FALSE)
     }
 
-    axis_label <- function(channel) {
+    axis_label = function(channel) {
       if (transform == "asinh") {
         paste0(channel, " [asinh(x / ", cofactor, ")]")
       } else {
@@ -447,4 +447,5 @@ cytoTerra_methods_plot <- list(
         panel.spacing = grid::unit(0.8, "lines")
       )
   }
+
 )

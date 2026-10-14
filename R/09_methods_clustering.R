@@ -1,3 +1,210 @@
+## some util function for plotting after clustering
+cytoTerra_get_clustering_data = function(
+    project,
+    result_name = NULL
+) {
+
+  if (is.null(result_name)) {
+    result_name <- project$active$clustering_result_name
+  }
+
+  if (is.null(result_name) ||
+      !is.character(result_name) ||
+      length(result_name) != 1L ||
+      !nzchar(result_name)) {
+    stop(
+      paste0(
+        "No active clustering result. Supply `result_name` or set ",
+        "`project$active$clustering_result_name`."
+      ),
+      call. = FALSE
+    )
+  }
+
+  result <- project$clustering_results[[result_name]]
+
+  if (is.null(result)) {
+    stop(
+      "Clustering result '", result_name, "' does not exist.",
+      call. = FALSE
+    )
+  }
+
+  # Expected cytoTerra structure:
+  # project$clustering_results[[result_name]] is a cell-level data.frame.
+  if (is.data.frame(result)) {
+    return(result)
+  }
+
+  # Also permit a list containing a data.frame in $data, if you use
+  # that structure for some saved result types.
+  if (is.list(result) && is.data.frame(result$data)) {
+    return(result$data)
+  }
+
+  stop(
+    "Clustering result '", result_name,
+    "' must be a data.frame or a list containing a data.frame in `$data`.",
+    call. = FALSE
+  )
+}
+
+cytoTerra_add_sample_metadata = function(
+    project,
+    data,
+    group_by
+) {
+
+  # A column already present in per-cell clustering data.
+  if (group_by %in% colnames(data)) {
+    return(data)
+  }
+
+  # Otherwise, look in project-level sample metadata.
+  if (is.null(project$sample_meta)) {
+    stop(
+      "`group_by = '", group_by,
+      "' is not in clustering data, and `project$sample_meta` is NULL.",
+      call. = FALSE
+    )
+  }
+
+  if (!"sample_id" %in% colnames(data)) {
+    stop(
+      "Clustering data must contain `sample_id` to use `sample_meta`.",
+      call. = FALSE
+    )
+  }
+
+  sample_meta <- as.data.frame(project$sample_meta)
+
+  if (!group_by %in% colnames(sample_meta)) {
+    stop(
+      "`group_by = '", group_by,
+      "' is not a column in clustering data or `project$sample_meta`.",
+      call. = FALSE
+    )
+  }
+
+  sample_meta$sample_id <- rownames(sample_meta)
+
+  data[[group_by]] <- sample_meta[
+    match(data$sample_id, sample_meta$sample_id),
+    group_by
+  ]
+
+  data
+}
+
+
+cytoTerra_validate_markers = function(
+    data,
+    markers
+) {
+
+  if (is.null(markers) ||
+      !is.character(markers) ||
+      length(markers) == 0L) {
+    stop(
+      "`markers` must contain one or more marker names.",
+      call. = FALSE
+    )
+  }
+
+  missing_markers <- setdiff(markers, colnames(data))
+
+  if (length(missing_markers) > 0L) {
+    stop(
+      "Marker(s) absent from clustering data: ",
+      paste(missing_markers, collapse = ", "),
+      ".",
+      call. = FALSE
+    )
+  }
+
+  invisible(TRUE)
+}
+
+cytoTerra_downsample_by_metacluster = function(
+    data,
+    max_cells_per_cluster = 5000L,
+    cluster_column = "FastPG_metacluster",
+    seed = 1L
+) {
+
+  if (!is.data.frame(data)) {
+    stop("`data` must be a data.frame.", call. = FALSE)
+  }
+
+  if (!cluster_column %in% colnames(data)) {
+    stop(
+      "`cluster_column` is not present in `data`: ",
+      cluster_column,
+      ".",
+      call. = FALSE
+    )
+  }
+
+  if (is.null(max_cells_per_cluster)) {
+    return(data)
+  }
+
+  if (!is.numeric(max_cells_per_cluster) ||
+      length(max_cells_per_cluster) != 1L ||
+      is.na(max_cells_per_cluster) ||
+      !is.finite(max_cells_per_cluster) ||
+      max_cells_per_cluster < 1) {
+    stop(
+      "`max_cells_per_cluster` must be NULL or a positive number.",
+      call. = FALSE
+    )
+  }
+
+  max_cells_per_cluster <- as.integer(
+    max_cells_per_cluster
+  )
+
+  data <- data[
+    !is.na(data[[cluster_column]]),
+    ,
+    drop = FALSE
+  ]
+
+  set.seed(seed)
+
+  cluster_indices <- split(
+    seq_len(nrow(data)),
+    as.character(data[[cluster_column]])
+  )
+
+  selected_indices <- unlist(
+    lapply(cluster_indices, function(indices) {
+
+      if (length(indices) <= max_cells_per_cluster) {
+        return(indices)
+      }
+
+      sample(
+        indices,
+        size = max_cells_per_cluster,
+        replace = FALSE
+      )
+    }),
+    use.names = FALSE
+  )
+
+  # Randomize plotting order so one cluster is not systematically
+  # drawn on top of the others.
+  selected_indices <- sample(selected_indices)
+
+  data[
+    selected_indices,
+    ,
+    drop = FALSE
+  ]
+}
+
+## list 
 cytoTerra_methods_clustering <- list(
 
   run_harmony_umap_flowsom = function(
@@ -1483,6 +1690,543 @@ run_harmony_umap_flowsom_fastpg = function(
   }
 
   invisible(dat)
+},
+
+
+set_active_clustering_result = function(
+    result_name
+) {
+
+  if (!is.character(result_name) ||
+      length(result_name) != 1L ||
+      !nzchar(result_name)) {
+    stop(
+      "`result_name` must be one non-empty character string.",
+      call. = FALSE
+    )
+  }
+
+  if (is.null(self$clustering_results[[result_name]])) {
+    stop(
+      "Clustering result '", result_name, "' does not exist.",
+      call. = FALSE
+    )
+  }
+
+  self$active$clustering_result_name <- result_name
+
+  invisible(self)
+},
+
+plot_umap = function(
+    result_name = NULL,
+    group_by = "FastPG_metacluster",
+    max_cells_per_cluster = 5000L,
+    point_size = 0.25,
+    alpha = 0.70,
+    shuffle = TRUE,
+    seed = 1L
+) {
+
+  data <- cytoTerra_get_clustering_data(
+    project = self,
+    result_name = result_name
+  )
+
+  required_columns <- c("UMAP_X", "UMAP_Y")
+
+  missing_columns <- setdiff(
+    required_columns,
+    colnames(data)
+  )
+
+  if (length(missing_columns) > 0L) {
+    stop(
+      "Clustering data is missing: ",
+      paste(missing_columns, collapse = ", "),
+      ".",
+      call. = FALSE
+    )
+  }
+
+  data <- cytoTerra_downsample_by_metacluster(
+    data = data,
+    max_cells_per_cluster = max_cells_per_cluster,
+    cluster_column = "FastPG_metacluster",
+    seed = seed
+  )
+
+  data <- cytoTerra_add_sample_metadata(
+    project = self,
+    data = data,
+    group_by = group_by
+  )
+
+  if (shuffle) {
+    set.seed(seed)
+    data <- data[sample.int(nrow(data)), , drop = FALSE]
+  }
+
+  data$plot_group <- as.factor(data[[group_by]])
+
+  ggplot2::ggplot(
+    data,
+    ggplot2::aes(
+      x = .data$UMAP_X,
+      y = .data$UMAP_Y,
+      colour = .data$plot_group
+    )
+  ) +
+    ggplot2::geom_point(
+      size = point_size,
+      alpha = alpha
+    ) +
+    ggplot2::coord_equal() +
+    ggplot2::labs(
+      title = paste0(
+        "UMAP — ",
+        if (is.null(result_name)) {
+          self$active$clustering_result_name
+        } else {
+          result_name
+        }
+      ),
+      x = "UMAP 1",
+      y = "UMAP 2",
+      colour = group_by
+    ) +
+    ggplot2::theme_classic() +
+    ggplot2::theme(
+      plot.title = ggplot2::element_text(face = "bold"),
+      axis.line = ggplot2::element_blank(),
+      axis.text = ggplot2::element_blank(),
+      axis.ticks = ggplot2::element_blank()
+    )
+},
+
+plot_feature_expression = function(
+    markers,
+    result_name = NULL,
+    max_cells_per_cluster = 5000L,
+    point_size = 0.25,
+    alpha = 0.70,
+    shuffle = TRUE,
+    seed = 1L,
+    min_cutoff = NULL,
+    max_cutoff = NULL
+) {
+
+  data <- cytoTerra_get_clustering_data(
+    project = self,
+    result_name = result_name
+  )
+
+  cytoTerra_validate_markers(
+    data = data,
+    markers = markers
+  )
+
+  required_columns <- c("UMAP_X", "UMAP_Y")
+
+  missing_columns <- setdiff(
+    required_columns,
+    colnames(data)
+  )
+
+  if (length(missing_columns) > 0L) {
+    stop(
+      "Clustering data is missing: ",
+      paste(missing_columns, collapse = ", "),
+      ".",
+      call. = FALSE
+    )
+  }
+
+  data <- cytoTerra_downsample_by_metacluster(
+    data = data,
+    max_cells_per_cluster = max_cells_per_cluster,
+    cluster_column = "FastPG_metacluster",
+    seed = seed
+  )
+
+  if (shuffle) {
+    set.seed(seed)
+    data <- data[sample.int(nrow(data)), , drop = FALSE]
+  }
+
+  plots <- lapply(markers, function(marker) {
+
+    plot_data <- data.frame(
+      UMAP_X = data$UMAP_X,
+      UMAP_Y = data$UMAP_Y,
+      expression = data[[marker]]
+    )
+
+    if (!is.null(min_cutoff)) {
+      plot_data$expression <- pmax(
+        plot_data$expression,
+        min_cutoff
+      )
+    }
+
+    if (!is.null(max_cutoff)) {
+      plot_data$expression <- pmin(
+        plot_data$expression,
+        max_cutoff
+      )
+    }
+
+    ggplot2::ggplot(
+      plot_data,
+      ggplot2::aes(
+        x = .data$UMAP_X,
+        y = .data$UMAP_Y,
+        colour = .data$expression
+      )
+    ) +
+      ggplot2::geom_point(
+        size = point_size,
+        alpha = alpha
+      ) +
+      ggplot2::scale_colour_viridis_c(
+        option = "magma",
+        name = marker
+      ) +
+      ggplot2::coord_equal() +
+      ggplot2::labs(
+        title = paste0(marker, " expression"),
+        x = "UMAP 1",
+        y = "UMAP 2"
+      ) +
+      ggplot2::theme_classic() +
+      ggplot2::theme(
+        plot.title = ggplot2::element_text(face = "bold"),
+        axis.line = ggplot2::element_blank(),
+        axis.text = ggplot2::element_blank(),
+        axis.ticks = ggplot2::element_blank()
+      )
+  })
+
+  names(plots) <- markers
+
+  # Return one ggplot for one marker and a named list for multiple markers.
+  if (length(plots) == 1L) {
+    return(plots[[1]])
+  }
+
+  plots
+},
+
+plot_dotplot = function(
+    markers,
+    result_name = NULL,
+    group_by = "FastPG_metacluster",
+    expression_threshold = 0,
+    scale = TRUE,
+    cluster_rows = FALSE
+) {
+
+  data <- cytoTerra_get_clustering_data(
+    project = self,
+    result_name = result_name
+  )
+
+  cytoTerra_validate_markers(
+    data = data,
+    markers = markers
+  )
+
+  data <- cytoTerra_add_sample_metadata(
+    project = self,
+    data = data,
+    group_by = group_by
+  )
+
+  data$plot_group <- as.character(data[[group_by]])
+
+  if (anyNA(data$plot_group)) {
+    warning(
+      "Some cells have missing values for `group_by`; they were omitted.",
+      call. = FALSE
+    )
+
+    data <- data[
+      !is.na(data$plot_group),
+      ,
+      drop = FALSE
+    ]
+  }
+
+  long_data <- do.call(
+    rbind,
+    lapply(markers, function(marker) {
+      data.frame(
+        group = data$plot_group,
+        marker = marker,
+        expression = data[[marker]],
+        stringsAsFactors = FALSE
+      )
+    })
+  )
+
+  summary_data <- stats::aggregate(
+    expression ~ group + marker,
+    data = long_data,
+    FUN = mean,
+    na.rm = TRUE
+  )
+
+  names(summary_data)[
+    names(summary_data) == "expression"
+  ] <- "average_expression"
+
+  percent_data <- stats::aggregate(
+    I(expression > expression_threshold) ~ group + marker,
+    data = long_data,
+    FUN = function(x) {
+      100 * mean(x, na.rm = TRUE)
+    }
+  )
+
+  names(percent_data)[
+    names(percent_data) == "I(expression > expression_threshold)"
+  ] <- "percent_expressing"
+
+  summary_data <- merge(
+    summary_data,
+    percent_data,
+    by = c("group", "marker"),
+    sort = FALSE
+  )
+
+  if (scale) {
+
+    summary_data$scaled_expression <- ave(
+      summary_data$average_expression,
+      summary_data$marker,
+      FUN = function(x) {
+        if (length(unique(x)) <= 1L) {
+          rep(0, length(x))
+        } else {
+          as.numeric(scale(x))
+        }
+      }
+    )
+
+    colour_column <- "scaled_expression"
+    colour_label <- "Scaled average expression"
+  } else {
+    colour_column <- "average_expression"
+    colour_label <- "Average expression"
+  }
+
+  group_levels <- unique(summary_data$group)
+
+  if (cluster_rows && length(group_levels) > 2L) {
+
+    average_matrix <- xtabs(
+      average_expression ~ group + marker,
+      data = summary_data
+    )
+
+    group_levels <- rownames(
+      average_matrix
+    )[stats::hclust(
+      stats::dist(average_matrix)
+    )$order]
+  }
+
+  summary_data$group <- factor(
+    summary_data$group,
+    levels = rev(group_levels)
+  )
+
+  summary_data$marker <- factor(
+    summary_data$marker,
+    levels = markers
+  )
+
+  ggplot2::ggplot(
+    summary_data,
+    ggplot2::aes(
+      x = .data$marker,
+      y = .data$group,
+      size = .data$percent_expressing,
+      colour = .data[[colour_column]]
+    )
+  ) +
+    ggplot2::geom_point() +
+    ggplot2::scale_size(
+      range = c(0, 9),
+      limits = c(0, 100),
+      name = "% expressing"
+    ) +
+    ggplot2::scale_colour_viridis_c(
+      option = "magma",
+      name = colour_label
+    ) +
+    ggplot2::labs(
+      title = paste0("Marker expression by ", group_by),
+      x = NULL,
+      y = group_by
+    ) +
+    ggplot2::theme_classic() +
+    ggplot2::theme(
+      plot.title = ggplot2::element_text(face = "bold"),
+      axis.text.x = ggplot2::element_text(
+        angle = 45,
+        hjust = 1
+      )
+    )
+},
+
+plot_expression_heatmap = function(
+    markers,
+    result_name = NULL,
+    group_by = "FastPG_metacluster",
+    scale = TRUE,
+    cluster_rows = TRUE,
+    cluster_columns = TRUE
+) {
+
+  data <- cytoTerra_get_clustering_data(
+    project = self,
+    result_name = result_name
+  )
+
+  cytoTerra_validate_markers(
+    data = data,
+    markers = markers
+  )
+
+  data <- cytoTerra_add_sample_metadata(
+    project = self,
+    data = data,
+    group_by = group_by
+  )
+
+  data$plot_group <- as.character(data[[group_by]])
+
+  data <- data[
+    !is.na(data$plot_group),
+    ,
+    drop = FALSE
+  ]
+
+  average_expression <- stats::aggregate(
+    data[, markers, drop = FALSE],
+    by = list(group = data$plot_group),
+    FUN = mean,
+    na.rm = TRUE
+  )
+
+  expression_matrix <- as.matrix(
+    average_expression[, markers, drop = FALSE]
+  )
+
+  rownames(expression_matrix) <- average_expression$group
+
+  if (scale) {
+    expression_matrix <- scale(expression_matrix)
+  }
+
+  if (cluster_rows && nrow(expression_matrix) > 2L) {
+    row_order <- stats::hclust(
+      stats::dist(expression_matrix)
+    )$order
+
+    expression_matrix <- expression_matrix[
+      row_order,
+      ,
+      drop = FALSE
+    ]
+  }
+
+  if (cluster_columns && ncol(expression_matrix) > 2L) {
+    column_order <- stats::hclust(
+      stats::dist(t(expression_matrix))
+    )$order
+
+    expression_matrix <- expression_matrix[
+      ,
+      column_order,
+      drop = FALSE
+    ]
+  }
+
+  heatmap_data <- as.data.frame(
+    as.table(expression_matrix),
+    stringsAsFactors = FALSE
+  )
+
+  colnames(heatmap_data) <- c(
+    "group",
+    "marker",
+    "expression"
+  )
+
+  heatmap_data$group <- factor(
+    heatmap_data$group,
+    levels = rev(rownames(expression_matrix))
+  )
+
+  heatmap_data$marker <- factor(
+    heatmap_data$marker,
+    levels = colnames(expression_matrix)
+  )
+
+  ggplot2::ggplot(
+    heatmap_data,
+    ggplot2::aes(
+      x = .data$marker,
+      y = .data$group,
+      fill = .data$expression
+    )
+  ) +
+    ggplot2::geom_tile(
+      colour = "white",
+      linewidth = 0.2
+    ) +
+    ggplot2::scale_fill_gradient2(
+      low = "#2166AC",
+      mid = "white",
+      high = "#B2182B",
+      midpoint = 0,
+      name = if (scale) {
+        "Scaled mean\nexpression"
+      } else {
+        "Mean\nexpression"
+      }
+    ) +
+    ggplot2::labs(
+      title = paste0("Marker expression by ", group_by),
+      x = NULL,
+      y = group_by
+    ) +
+    ggplot2::theme_minimal() +
+    ggplot2::theme(
+      plot.title = ggplot2::element_text(face = "bold"),
+      axis.text.x = ggplot2::element_text(
+        angle = 45,
+        hjust = 1
+      ),
+      panel.grid = ggplot2::element_blank()
+    )
+},
+
+get_metacluster_counts = function(
+    result_name = NULL
+) {
+
+  data <- cytoTerra_get_clustering_data(
+    project = self,
+    result_name = result_name
+  )
+
+  cytoTerra_metacluster_counts(data)
 }
 
 )
+
+## end of list
+

@@ -1,3 +1,43 @@
+cytoTerra_method_lists <- list(
+  samples = cytoTerra_methods_samples,
+  gates = cytoTerra_methods_gates,
+  auto_gating = cytoTerra_methods_auto_gating,
+  manual_gates = cytoTerra_methods_manual_gates,
+  dataset = cytoTerra_methods_dataset,
+  plot = cytoTerra_methods_plot,
+  gating_workspace = cytoTerra_methods_gating_workspace,
+  clustering = cytoTerra_methods_clustering
+)
+
+for (list_name in names(cytoTerra_method_lists)) {
+
+  method_list <- cytoTerra_method_lists[[list_name]]
+
+  if (!is.list(method_list)) {
+    stop(
+      "`cytoTerra_methods_", list_name,
+      "` is not a list.",
+      call. = FALSE
+    )
+  }
+
+  unnamed_entries <- which(
+    is.na(names(method_list)) |
+      !nzchar(names(method_list))
+  )
+
+  if (length(unnamed_entries) > 0L) {
+    stop(
+      "Unnamed item(s) found in `cytoTerra_methods_",
+      list_name,
+      "` at position(s): ",
+      paste(unnamed_entries, collapse = ", "),
+      ".",
+      call. = FALSE
+    )
+  }
+}
+
 # Internal mutable cytometry project object.
 #'
 #' @noRd
@@ -150,7 +190,7 @@ CytoTerraProject <- R6::R6Class(
     cytoTerra_methods_manual_gates,
     cytoTerra_methods_dataset,
     cytoTerra_methods_plot,
-    cytoTerra_methods_clustering,
-    cytoTerra_methods_gating_workspace
+    cytoTerra_methods_gating_workspace,
+    cytoTerra_methods_clustering
   )
 )
