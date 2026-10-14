@@ -19,10 +19,140 @@ Install the development version from GitHub:
 ```r
 install.packages("remotes")
 
-remotes::install_github("YOUR-GITHUB-USERNAME/cytoTerra")
+remotes::install_github("huwenhuo/cytoTerra")
 ```
 
-Replace `YOUR-GITHUB-USERNAME` with your GitHub username or organization.
+## Quick start
+
+### Basic operation
+```r
+library(cytoTerra)
+
+# `fcs_files` is a character vector of FCS file paths.
+# `df` contains sample-level metadata in the same order as `fcs_files`.
+project <- cytoTerra(
+  fcs_files = fcs_files[1:3],
+  sample_ids = df$sample_id[1:3],
+  sample_names = df$Tx[1:3]
+)
+
+# Automatically create an initial singlet gate for each sample.
+project$auto_gate_singlets()
+
+# Launch the interactive workspace for a reference sample.
+# In the workspace, select `Singlets` as the parent population and
+# manually create downstream gates (for example, live CD45+ cells,
+# CD4+CD8− cells, and CD4−CD8+ cells).
+project$launch_gating_workspace(
+  sample_id = "H1"
+)
+
+# Copy the complete gate tree from H1 to every other sample.
+# Existing gates are retained because overwrite = FALSE by default.
+project$copy_gate_tree(
+  from_sample = "H1",
+  overwrite = FALSE
+)
+
+project$get_gate_tree(
+  sample_id = "A1",
+  include_root = TRUE
+)
+
+gating_file <- "~/workspace/flow/lymphoid_all_samples_gate_tree.rds"
+
+project$export_all_gate_trees(
+  file = gating_file
+)
+
+saveRDS(
+  project,
+  file = "lymphoid_cytoTerra_project.rds"
+)
+
+```
+
+### Importing gates into a new project
+
+Keep this as a separate section, because import is intended for a **new or different project**, not the project from which the gates were just exported.
+
+If importing one reference-sample template:
+
+```markdown
+### Reuse a gating template
+
+Export a gate tree from a manually gated reference sample:
+
+```r
+project$export_gate_tree(
+  sample_id = "H1",
+  file = "H1_gate_template.rds"
+)
+
+new_project$import_gate_tree(
+  file = "H1_gate_template.rds",
+  to_samples = c("A1", "A2", "A3"),
+  overwrite = FALSE
+)
+
+```
+
+
+Use the all-sample export/import API only if you have implemented a matching method such as:
+
+```r
+new_project$import_all_gate_trees(
+  file = "lymphoid_all_samples_gate_tree.rds",
+  overwrite = FALSE
+)
+
+```
+
+### Clustering gated populations
+
+Use selected gated populations for integrated dimensionality reduction
+and clustering.
+
+```r
+cluster_markers <- c(
+  "CD69", "MHCII", "TCF7-TCF-1", "CD62L", "CD44",
+  "IFNg", "CD25", "CD103", "GranzymeB", "CD8a",
+  "GATA3", "PD-1", "CD5", "TOX", "Nkp46", "CD127",
+  "Ki-67", "CCR7", "Tim-3", "FOXP3", "LAG-3"
+)
+
+project$run_harmony_umap_flowsom_fastpg(
+  result_name = "run1",
+  gate_names = c(
+    "CD4pos_CD8neg",
+    "CD4neg_CD8pos"
+  ),
+  markers = cluster_markers
+)
+
+clustering_data <- project$clustering_results[["run1"]]
+
+str(clustering_data)
+
+```
+
+Then include a brief “planned visualization” note:
+
+```markdown
+### Visualization
+
+Built-in visualization functions for UMAPs, marker feature plots,
+cluster-composition dot plots, and related summaries are under active
+development.
+
+In the meantime, clustering results can be extracted directly:
+
+```r
+clustering_data <- project$clustering_results[["run1"]]
+```
+
+
+One important adjustment: use named arguments in README examples—e.g., `from_sample = "H1"` rather than `project$copy_gate_tree("H2")`. It makes the intended source sample unambiguous and prevents the comment/code mismatch.
 
 ## R dependencies
 
