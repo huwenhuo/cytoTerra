@@ -240,7 +240,7 @@ host = "127.0.0.1"
 Do not expose the Shiny process directly to the network. Access it using the
 Open OnDemand `/proxy/` URL printed by cytoTerra.
 
-## Planned Preprocessing Features
+## unPlanned Preprocessing Features
 
 ### Compensation
 
@@ -254,7 +254,7 @@ Compensation matrices will be stored with the project and applied only when data
   - compensated data.
 - Raw event data will remain unchanged; compensation will be applied dynamically when needed.
 
-Planned compensation tools include:
+unPlanned compensation tools include:
 
 1. Estimating a compensation matrix from unstained and single-stained controls.
 2. Reviewing and editing compensation matrices interactively through the Shiny interface.
@@ -267,7 +267,7 @@ Spectral unmixing is generally performed in instrument-vendor software, such as 
 
 A future capability may support **post-acquisition re-unmixing** of recorded spectral data. This may be useful when reference controls, unmixing settings, or analysis decisions need to be revisited after acquisition.
 
-Planned re-unmixing tools include:
+unPlanned re-unmixing tools include:
 
 1. Estimating an unmixing/reference-spectra table from reference controls.
 2. Performing spectral unmixing using the estimated or user-supplied reference table.
