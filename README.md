@@ -240,6 +240,42 @@ host = "127.0.0.1"
 Do not expose the Shiny process directly to the network. Access it using the
 Open OnDemand `/proxy/` URL printed by cytoTerra.
 
+## Planned Preprocessing Features
+
+### Compensation
+
+The package will support conventional fluorescence compensation using a lazy-processing approach in the future. 
+Compensation matrices will be stored with the project and applied only when data are accessed for visualization, gating, or downstream analysis.
+
+- Each sample may retain its own compensation matrix, such as a matrix imported from FCS metadata.
+- The project may also define a shared compensation matrix to apply consistently across selected samples.
+- The active analysis setting will be stored in `project$active$compensate`, indicating whether plotting and gating use:
+  - raw, uncompensated data; or
+  - compensated data.
+- Raw event data will remain unchanged; compensation will be applied dynamically when needed.
+
+Planned compensation tools include:
+
+1. Estimating a compensation matrix from unstained and single-stained controls.
+2. Reviewing and editing compensation matrices interactively through the Shiny interface.
+3. Comparing raw and compensated channel-pair plots for quality control.
+4. Saving compensation settings and matrix provenance with the project.
+
+### Spectral Unmixing
+
+Spectral unmixing is generally performed in instrument-vendor software, such as Cytek SpectroFlo or Sony ID7000 software, before FCS export. The package will support analysis of already unmixed data.
+
+A future capability may support **post-acquisition re-unmixing** of recorded spectral data. This may be useful when reference controls, unmixing settings, or analysis decisions need to be revisited after acquisition.
+
+Planned re-unmixing tools include:
+
+1. Estimating an unmixing/reference-spectra table from reference controls.
+2. Performing spectral unmixing using the estimated or user-supplied reference table.
+3. Reviewing unmixing quality interactively.
+4. Exporting re-unmixed events as FCS files for use in other analysis software.
+
+> Native spectral unmixing is a longer-term feature and will require validation with appropriate single-stained reference controls, autofluorescence controls, and instrument-specific detector configurations.
+
 ## License
 
 MIT License. See [`LICENSE`](LICENSE).
