@@ -244,37 +244,36 @@ Open OnDemand `/proxy/` URL printed by cytoTerra.
 
 ### Compensation
 
-The package will support conventional fluorescence compensation using a lazy-processing approach in the future. 
-Compensation matrices will be stored with the project and applied only when data are accessed for visualization, gating, or downstream analysis.
+In the future, the package may support conventional fluorescence compensation through a lazy-processing approach. Compensation matrices would be stored with the project and applied only when data are accessed for visualization, gating, or downstream analysis.
 
-- Each sample may retain its own compensation matrix, such as a matrix imported from FCS metadata.
-- The project may also define a shared compensation matrix to apply consistently across selected samples.
-- The active analysis setting will be stored in `project$active$compensate`, indicating whether plotting and gating use:
+- Each sample may retain its own compensation matrix, for example, a matrix imported from FCS metadata.
+- The project may also define a shared compensation matrix for consistent use across selected samples.
+- The active analysis setting would be stored in `project$active$compensate`, indicating whether plotting and gating use:
   - raw, uncompensated data; or
   - compensated data.
-- Raw event data will remain unchanged; compensation will be applied dynamically when needed.
+- Raw event data would remain unchanged; compensation would be applied dynamically when needed.
 
-unPlanned compensation tools include:
+Possible unPlanned compensation tools include:
 
 1. Estimating a compensation matrix from unstained and single-stained controls.
 2. Reviewing and editing compensation matrices interactively through the Shiny interface.
 3. Comparing raw and compensated channel-pair plots for quality control.
-4. Saving compensation settings and matrix provenance with the project.
+4. Saving compensation settings, control selections, and matrix provenance with the project.
 
 ### Spectral Unmixing
 
-Spectral unmixing is generally performed in instrument-vendor software, such as Cytek SpectroFlo or Sony ID7000 software, before FCS export. The package will support analysis of already unmixed data.
+Spectral unmixing is generally performed in instrument-vendor software, such as Cytek SpectroFlo or Sony ID7000 software, before FCS export. The package will continue to support analysis of already unmixed data.
 
-A future capability may support **post-acquisition re-unmixing** of recorded spectral data. This may be useful when reference controls, unmixing settings, or analysis decisions need to be revisited after acquisition.
+A future capability may support **post-acquisition re-unmixing** of recorded spectral data. This could be useful when reference controls, unmixing settings, or analysis decisions need to be revisited after acquisition.
 
-unPlanned re-unmixing tools include:
+Possible unPlanned re-unmixing tools include:
 
-1. Estimating an unmixing/reference-spectra table from reference controls.
-2. Performing spectral unmixing using the estimated or user-supplied reference table.
+1. Estimating a reference-spectra matrix from reference controls.
+2. Performing spectral unmixing using an estimated or user-supplied reference-spectra matrix.
 3. Reviewing unmixing quality interactively.
 4. Exporting re-unmixed events as FCS files for use in other analysis software.
 
-> Native spectral unmixing is a longer-term feature and will require validation with appropriate single-stained reference controls, autofluorescence controls, and instrument-specific detector configurations.
+> Native spectral unmixing is a longer-term feature and would require validation using suitable single-stained reference controls, autofluorescence controls, and instrument-specific detector configurations.
 
 ## License
 
