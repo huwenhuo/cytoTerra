@@ -75,7 +75,10 @@ saveRDS(
 
 ```
 
-### Manual / interactie gating
+## Interactive Manual Gating
+
+The package provides a Shiny interface for interactive manual gating.
+
 
 ```r
 # this works on HPC
@@ -99,6 +102,11 @@ project$launch_gating_workspace(
 # Listening on http://127.0.0.1:3838
 
 ```
+
+<p align="center">
+  <img src="man/manual_gating.png" alt="Screenshot of the manual gating interface" width="800">
+</p>
+
 
 ### Reuse a gating template
 
