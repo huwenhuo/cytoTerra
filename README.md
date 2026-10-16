@@ -29,7 +29,6 @@ remotes::install_github("huwenhuo/cytoTerra")
 library(cytoTerra)
 
 # `fcs_files` is a character vector of FCS file paths.
-# `df` contains sample-level metadata in the same order as `fcs_files`.
 # my typical file name is 'A1 421_Plate_001.fcs
 # I use A1 as sample_id
 # sample_name is usually a meaning full name such as 'drug A treat rep 1'
@@ -37,7 +36,7 @@ library(cytoTerra)
 project <- cytoTerra(
   fcs_files = fcs_files[1:3],
   sample_ids = df$sample_id[1:3],
-  sample_names = df$Tx[1:3]
+  sample_names = c('tx1', 'tx2', 'tx3')
 )
 
 # Automatically create an initial singlet gate for each sample.
@@ -76,11 +75,30 @@ saveRDS(
 
 ```
 
-### Importing gates into a new project
+### Manual / interactie gating
 
-Keep this as a separate section, because import is intended for a **new or different project**, not the project from which the gates were just exported.
+```r
+# this works on HPC
+# it needs to install jupyter-server-proxy
+# it will open another web page after clicking the URL below
+project$launch_gating_workspace(
+  sample_id = "A1"
+)
 
-If importing one reference-sample template:
+# this create below:
+# ============================================================
+# cytoTerra Shiny gating workspace
+# Open this URL in a new browser tab:
+# https://ood-bouchet.ycrc.yale.edu/node/a1114u28n01.mghpcc.ycrc.yale.edu/59092/proxy/3838/
+# ============================================================
+# 
+# 
+# Open cytoTerra manual-gating workspace
+# 
+# 
+# Listening on http://127.0.0.1:3838
+
+```
 
 ### Reuse a gating template
 
